@@ -4,7 +4,26 @@
     {
         static async Task Main(string[] args)
         {
+            // Check for speech configuration
+            bool enableSpeech = !args.Contains("--no-speech");
+            string ttsVoice = "en+f3"; // Default female voice
+            
+            // Parse voice parameter if provided
+            for (int i = 0; i < args.Length - 1; i++)
+            {
+                if (args[i] == "--voice")
+                {
+                    ttsVoice = args[i + 1];
+                    break;
+                }
+            }
+            
             Console.WriteLine("🎵 Snarky Bluetooth Speaker Starting Up...");
+            Console.WriteLine($"Speech: {(enableSpeech ? "Enabled" : "Disabled")}");
+            if (enableSpeech)
+            {
+                Console.WriteLine($"Voice: {ttsVoice}");
+            }
             
             // Get OpenAI API key from environment or prompt user
             string? apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
@@ -21,7 +40,7 @@
                 }
             }
             
-            using var monitor = new MusicMonitor(apiKey);
+            using var monitor = new MusicMonitor(apiKey, enableSpeech, ttsVoice);
             
             try
             {
@@ -32,6 +51,7 @@
                 Console.WriteLine("Commands:");
                 Console.WriteLine("  'quit' or 'exit' - Stop the application");
                 Console.WriteLine("  'status' - Show current status");
+                Console.WriteLine("  'speech on/off' - Toggle speech");
                 Console.WriteLine("\nConnect your phone and start playing music to hear my commentary...\n");
                 
                 string? input;

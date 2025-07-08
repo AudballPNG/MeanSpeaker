@@ -68,6 +68,10 @@ namespace BluetoothSpeaker
         private readonly HttpClient _httpClient;
         private readonly Random _random;
         
+        // Text-to-speech settings
+        private readonly bool _enableSpeech;
+        private readonly string _ttsVoice;
+        
         // Bluetooth monitoring
         private IObjectManager? _objectManager;
         private IAdapter1? _adapter;
@@ -87,11 +91,13 @@ namespace BluetoothSpeaker
         private CancellationTokenSource? _monitoringCancellation;
         private bool _disposed = false;
 
-        public MusicMonitor(string openAiApiKey)
+        public MusicMonitor(string openAiApiKey, bool enableSpeech = true, string ttsVoice = "en+f3")
         {
             _openAiApiKey = openAiApiKey ?? throw new ArgumentNullException(nameof(openAiApiKey));
             _httpClient = new HttpClient();
             _random = new Random();
+            _enableSpeech = enableSpeech;
+            _ttsVoice = ttsVoice;
         }
 
         public async Task InitializeAsync()
@@ -514,6 +520,12 @@ namespace BluetoothSpeaker
                         {
                             session.AddComment(comment);
                             Console.WriteLine($"\n🎵 [{session.DeviceName}] SPEAKER SAYS: {comment}\n");
+                            
+                            // Speak the comment out loud
+                            if (_enableSpeech)
+                            {
+                                await SpeakAsync(comment);
+                            }
                         }
                     }
                 }
@@ -526,6 +538,44 @@ namespace BluetoothSpeaker
             {
                 Console.WriteLine($"Error generating comment: {ex.Message}");
             }
+        }
+
+        private async Task SpeakAsync(string text)
+        {
+            try
+            {
+                // Clean up text for better speech synthesis
+                var cleanText = CleanTextForSpeech(text);
+                
+                // Use espeak for text-to-speech on Linux
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+                {
+                    // Use espeak with specified voice and speed
+                    await RunCommandAsync("espeak", $"-v {_ttsVoice} -s 160 -a 200 \"{cleanText}\"");
+                }
+                else
+                {
+                    // Fallback for development on Windows - use built-in SAPI
+                    await RunCommandAsync("powershell", $"-Command \"Add-Type -AssemblyName System.Speech; $speak = New-Object System.Speech.Synthesis.SpeechSynthesizer; $speak.Speak('{cleanText}')\"");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error speaking text: {ex.Message}");
+            }
+        }
+
+        private string CleanTextForSpeech(string text)
+        {
+            // Remove or replace characters that might cause issues with TTS
+            return text
+                .Replace("\"", "")
+                .Replace("'", "")
+                .Replace("`", "")
+                .Replace("&", "and")
+                .Replace("<", "less than")
+                .Replace(">", "greater than")
+                .Trim();
         }
 
         private string GetOrdinal(int number)
@@ -692,6 +742,12 @@ apt-get update
 # Install Bluetooth and audio packages
 apt-get install -y bluez bluealsa bluetooth bluez-tools
 apt-get install -y playerctl pulseaudio-module-bluetooth pulseaudio alsa-utils
+
+# Install text-to-speech packages
+apt-get install -y espeak espeak-data mbrola mbrola-voices
+
+# Install additional voice packages for better quality
+apt-get install -y festival festival-dev speech-dispatcher
 
 # Enable services
 systemctl enable bluetooth

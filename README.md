@@ -6,6 +6,8 @@ A Raspberry Pi Bluetooth speaker that not only plays your music but also provide
 
 - **Bluetooth A2DP Audio Sink**: Receives audio from phones, tablets, and other Bluetooth devices
 - **AI Music Commentary**: Uses OpenAI GPT to generate witty, sarcastic comments about your music
+- **Text-to-Speech**: Actually speaks the commentary out loud using espeak
+- **Voice Options**: Multiple voice options for different personalities
 - **Automatic Setup**: Installs and configures all necessary Bluetooth components
 - **Cross-Device Compatibility**: Works with iOS, Android, and other Bluetooth audio sources
 - **Real-time Monitoring**: Tracks music playback, track changes, and device connections
@@ -67,14 +69,43 @@ Note: `sudo` is required for Bluetooth system configuration on first run.
 
 ## Usage
 
-1. **Start the Application**: Run `sudo dotnet run`
-2. **First-Time Setup**: The app will automatically install and configure Bluetooth services
-3. **Connect Your Device**: 
-   - On your phone/tablet, go to Bluetooth settings
-   - Look for the discoverable Raspberry Pi device
-   - Pair and connect
-4. **Play Music**: Start playing music on your device - it will stream to the Pi
-5. **Enjoy the Commentary**: The AI will occasionally make snarky remarks about your music choices
+### Basic Usage
+```bash
+# Run with default settings (speech enabled)
+dotnet run
+
+# Run without speech (console only)
+dotnet run -- --no-speech
+
+# Run with specific voice
+dotnet run -- --voice en+f4
+
+# Run with male voice
+dotnet run -- --voice en+m3
+```
+
+### Available Voices
+- `en+f3` - Female voice 3 (default)
+- `en+f4` - Female voice 4 (higher pitch)
+- `en+m3` - Male voice 3
+- `en+m4` - Male voice 4
+- `en+croak` - Creaky voice (fun for insults!)
+- `en+whisper` - Whisper voice
+
+### What You'll Hear
+
+When someone connects and plays music, your speaker will:
+- Announce device connections
+- Comment on music choices
+- Roast repetitive listening habits
+- Provide session summaries
+
+Example interactions:
+> 🔊 "Oh great, iPhone just connected. Let me guess, you're about to blast some questionable music choices through me?"
+
+> 🔊 "Taylor Swift again? That's the third time this session. Are you stuck in 2008?"
+
+> 🔊 "After 20 songs, you're still playing the same 5 artists. Fascinating."
 
 ### Commands
 
