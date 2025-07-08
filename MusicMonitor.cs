@@ -12,18 +12,6 @@ using System.Threading.Tasks;
 
 namespace BluetoothSpeaker
 {
-    // Helper classes for track change detection
-    public class PropertyChanges
-    {
-        public Dictionary<string, object> Changed { get; set; } = new();
-    }
-
-    public class PropertyChange
-    {
-        public string Key { get; set; } = "";
-        public object? Value { get; set; }
-    }
-
     public class MusicMonitor : IDisposable
     {
         private readonly string _openAiApiKey;
@@ -43,7 +31,12 @@ namespace BluetoothSpeaker
         private string _connectedDeviceName = "";
         private string _connectedDeviceAddress = "";
         private DateTime _lastCommentTime = DateTime.MinValue;
-        private readonly TimeSpan _commentThrottle = TimeSpan.FromSeconds(10);
+        private readonly TimeSpan _commentThrottle = TimeSpan.FromSeconds(10); // Reduced from 30 to 10 seconds
+        
+        // Audio routing state to prevent unnecessary restarts
+        private DateTime _lastAudioRoutingSetup = DateTime.MinValue;
+        private readonly TimeSpan _audioRoutingCooldown = TimeSpan.FromSeconds(15);
+        private bool _audioRoutingActive = false;
         
         private CancellationTokenSource? _monitoringCancellation;
         private bool _disposed = false;
@@ -268,13 +261,11 @@ namespace BluetoothSpeaker
         {
             var prompts = new[]
             {
-                "Oh great, someone started playing music. Let me guess - it's either complete garbage or something that should be banned by the Geneva Convention?",
-                "Music detected! I can't see what it is, but knowing your absolutely horrific taste, I'm already cringing.",
-                "Audio is playing... and somehow I just know it's going to be an assault on my poor speakers.",
-                "Well, well, someone pressed play. Time to endure whatever auditory nightmare you've chosen to inflict on me.",
-                "Music started! I'd tell you what I think about the song, but I'm pretty sure it's terrible just based on your track record.",
-                "Oh wonderful, mystery music. Let me guess - it's something that makes even elevator music sound like a symphony?",
-                "Audio detected! My speakers are already filing for hazard pay."
+                "Oh, someone started playing music. Let me guess - it's either terrible pop music or something I've never heard of?",
+                "Music detected! I can't see what it is, but knowing your taste, I'm already preparing my sarcasm.",
+                "Audio is playing... and somehow I just know it's going to be questionable.",
+                "Well, well, someone pressed play. Time to judge whatever sonic experience you've chosen.",
+                "Music started! I'd tell you what I think about the song, but your device is being mysterious about it."
             };
             
             var prompt = prompts[_random.Next(prompts.Length)];
@@ -355,6 +346,7 @@ namespace BluetoothSpeaker
                     _connectedDeviceAddress = "";
                     _connectedDeviceName = "";
                     _currentTrack = "";
+                    _audioRoutingActive = false; // Reset audio routing state
                 }
             }
             catch (Exception ex)
@@ -428,8 +420,12 @@ namespace BluetoothSpeaker
                 if (!string.IsNullOrEmpty(mprisMetadata) && mprisMetadata != _currentTrack)
                 {
                     Console.WriteLine($"🎵 Now playing: {mprisMetadata}");
-                    await OnTrackChangedInternal(_currentTrack, mprisMetadata);
                     _currentTrack = mprisMetadata;
+                    await EnsureAudioRoutingAsync();
+                    if (ShouldGenerateComment())
+                    {
+                        await GenerateTrackCommentAsync(mprisMetadata);
+                    }
                     return;
                 }
                 
@@ -438,8 +434,12 @@ namespace BluetoothSpeaker
                 if (!string.IsNullOrEmpty(bluezMetadata) && bluezMetadata != _currentTrack)
                 {
                     Console.WriteLine($"🎵 Now playing: {bluezMetadata}");
-                    await OnTrackChangedInternal(_currentTrack, bluezMetadata);
                     _currentTrack = bluezMetadata;
+                    await EnsureAudioRoutingAsync();
+                    if (ShouldGenerateComment())
+                    {
+                        await GenerateTrackCommentAsync(bluezMetadata);
+                    }
                     return;
                 }
                 
@@ -448,8 +448,12 @@ namespace BluetoothSpeaker
                 if (!string.IsNullOrEmpty(playerctlMetadata) && playerctlMetadata != _currentTrack)
                 {
                     Console.WriteLine($"🎵 Now playing: {playerctlMetadata}");
-                    await OnTrackChangedInternal(_currentTrack, playerctlMetadata);
                     _currentTrack = playerctlMetadata;
+                    await EnsureAudioRoutingAsync();
+                    if (ShouldGenerateComment())
+                    {
+                        await GenerateTrackCommentAsync(playerctlMetadata);
+                    }
                     return;
                 }
                 
@@ -458,8 +462,12 @@ namespace BluetoothSpeaker
                 if (!string.IsNullOrEmpty(audioActivity) && audioActivity != _currentTrack)
                 {
                     Console.WriteLine($"🎵 {audioActivity}");
-                    await OnTrackChangedInternal(_currentTrack, audioActivity);
                     _currentTrack = audioActivity;
+                    await EnsureAudioRoutingAsync();
+                    if (ShouldGenerateComment())
+                    {
+                        await GenerateTrackCommentAsync(audioActivity);
+                    }
                     return;
                 }
                 
@@ -468,8 +476,12 @@ namespace BluetoothSpeaker
                 if (!string.IsNullOrEmpty(blualsaMetadata) && blualsaMetadata != _currentTrack)
                 {
                     Console.WriteLine($"🎵 Now playing: {blualsaMetadata}");
-                    await OnTrackChangedInternal(_currentTrack, blualsaMetadata);
                     _currentTrack = blualsaMetadata;
+                    await EnsureAudioRoutingAsync();
+                    if (ShouldGenerateComment())
+                    {
+                        await GenerateTrackCommentAsync(blualsaMetadata);
+                    }
                     return;
                 }
             }
@@ -483,38 +495,66 @@ namespace BluetoothSpeaker
         {
             try
             {
+                // Check if we recently set up audio routing to avoid unnecessary restarts
+                var timeSinceLastSetup = DateTime.Now - _lastAudioRoutingSetup;
+                if (_audioRoutingActive && timeSinceLastSetup < _audioRoutingCooldown)
+                {
+                    Console.WriteLine("🔧 Audio routing recently configured, skipping restart");
+                    return;
+                }
+                
                 Console.WriteLine("🔧 Ensuring audio routing is active...");
                 
-                // Method 1: Check if bluealsa-aplay is running and restart if needed
+                // Method 1: Check if bluealsa-aplay is running (but don't restart unless really needed)
                 var status = await RunCommandWithOutputAsync("systemctl", "is-active bluealsa-aplay");
                 if (status.Trim() != "active")
                 {
-                    Console.WriteLine("🔧 Restarting bluealsa-aplay service...");
+                    Console.WriteLine("🔧 bluealsa-aplay service not active, restarting...");
                     await RunCommandSilentlyAsync("sudo", "systemctl restart bluealsa-aplay");
                     await Task.Delay(2000); // Give it time to start
+                    _lastAudioRoutingSetup = DateTime.Now;
+                    _audioRoutingActive = true;
+                }
+                else
+                {
+                    Console.WriteLine("✅ bluealsa-aplay service is already active");
+                    _audioRoutingActive = true;
                 }
                 
-                // Method 2: Use our dynamic routing script if available
-                if (File.Exists("/usr/local/bin/route-bluetooth-audio.sh"))
+                // Method 2: Use our dynamic routing script if available (only if not recently run)
+                if (File.Exists("/usr/local/bin/route-bluetooth-audio.sh") && timeSinceLastSetup >= _audioRoutingCooldown)
                 {
                     Console.WriteLine("🔧 Running dynamic audio routing...");
                     await RunCommandSilentlyAsync("/usr/local/bin/route-bluetooth-audio.sh", "");
+                    _lastAudioRoutingSetup = DateTime.Now;
                 }
                 
-                // Method 3: Direct bluealsa-aplay for connected device if we have one
-                if (!string.IsNullOrEmpty(_connectedDeviceAddress) && _connectedDeviceAddress != "detected")
+                // Method 3: For new device connections only, set up direct routing
+                if (!string.IsNullOrEmpty(_connectedDeviceAddress) && 
+                    _connectedDeviceAddress != "detected" && 
+                    timeSinceLastSetup >= _audioRoutingCooldown)
                 {
-                    Console.WriteLine($"🔧 Starting direct audio routing for {_connectedDeviceAddress}...");
+                    Console.WriteLine($"🔧 Verifying audio routing for {_connectedDeviceAddress}...");
                     
-                    // Kill existing processes first
-                    await RunCommandSilentlyAsync("pkill", "-f 'bluealsa-aplay.*" + _connectedDeviceAddress + "'");
-                    await Task.Delay(1000);
+                    // Check if a bluealsa-aplay process is already running for this device
+                    var existingProcess = await RunCommandWithOutputAsync("pgrep", $"-f 'bluealsa-aplay.*{_connectedDeviceAddress}'");
                     
-                    // Start new process for this device
-                    _ = Task.Run(async () =>
+                    if (string.IsNullOrEmpty(existingProcess?.Trim()))
                     {
-                        await RunCommandAsync("bluealsa-aplay", $"--pcm-buffer-time=250000 {_connectedDeviceAddress}");
-                    });
+                        Console.WriteLine($"🔧 Starting direct audio routing for {_connectedDeviceAddress}...");
+                        
+                        // Start new process for this device (only if not already running)
+                        _ = Task.Run(async () =>
+                        {
+                            await RunCommandAsync("bluealsa-aplay", $"--pcm-buffer-time=250000 {_connectedDeviceAddress}");
+                        });
+                        
+                        _lastAudioRoutingSetup = DateTime.Now;
+                    }
+                    else
+                    {
+                        Console.WriteLine($"✅ bluealsa-aplay already running for {_connectedDeviceAddress}");
+                    }
                 }
                 
                 Console.WriteLine("✅ Audio routing setup complete");
@@ -613,8 +653,7 @@ namespace BluetoothSpeaker
         {
             var timeSinceLastComment = DateTime.Now - _lastCommentTime;
             var throttleCheck = timeSinceLastComment > _commentThrottle;
-            
-            // Always generate comments for track changes (but respect throttling)
+            // Always generate comments for track changes, but respect throttling
             return throttleCheck;
         }
 
@@ -622,11 +661,10 @@ namespace BluetoothSpeaker
         {
             var prompts = new[]
             {
-                $"Oh fantastic, {deviceName} just connected. I'm already preparing myself for the musical torture you're about to inflict on me.",
-                $"Great, {deviceName} is here to assault my speakers with whatever garbage passes for music in your world.",
-                $"{deviceName} connected. Time to endure another session of your absolutely terrible taste in music.",
-                $"Oh look, {deviceName} wants to use me as an instrument of sonic torture. How delightful.",
-                $"Well well, {deviceName} has arrived to subject me to what I can only assume will be musical war crimes."
+                $"Oh great, {deviceName} just connected. Let me guess, you're about to blast some questionable music choices through me?",
+                $"Well well, {deviceName} has arrived. Time to judge your terrible taste in music.",
+                $"{deviceName} connected. I'm ready to roast whatever audio nightmare you're about to subject me to.",
+                $"Oh look, {deviceName} wants to use me. Hope you have better music taste than my last victim."
             };
             
             var prompt = prompts[_random.Next(prompts.Length)];
@@ -637,14 +675,11 @@ namespace BluetoothSpeaker
         {
             var prompts = new[]
             {
-                $"'{trackInfo}'? Seriously? This is what you consider music? My circuits are literally crying.",
-                $"Oh God, '{trackInfo}'. I've heard dying cats make better sounds than this garbage.",
-                $"'{trackInfo}' - congratulations, you've found something that makes elevator music sound like a masterpiece.",
-                $"Playing '{trackInfo}'. I didn't know it was possible to make my speakers want to commit suicide.",
-                $"'{trackInfo}' - because apparently torturing innocent speakers is your hobby.",
-                $"Really? '{trackInfo}'? This is the kind of trash that makes me question why I was even built.",
-                $"'{trackInfo}' - I'm pretty sure this violates several international laws against cruel and unusual punishment.",
-                $"Oh wonderful, '{trackInfo}'. Nothing says 'I have no soul' quite like this musical abomination."
+                $"Really? '{trackInfo}'? That's what passes for music these days?",
+                $"Oh wonderful, '{trackInfo}'. Let me guess, this is your 'favorite song'?",
+                $"'{trackInfo}' - because nothing says 'good taste' like... actually, no, this doesn't say that at all.",
+                $"Playing '{trackInfo}'. Well, I've heard worse... wait, no, I haven't.",
+                $"'{trackInfo}' coming right up. Hope your neighbors appreciate your... unique... musical choices."
             };
             
             var prompt = prompts[_random.Next(prompts.Length)];
@@ -662,13 +697,11 @@ namespace BluetoothSpeaker
                 {
                     var fallbackComments = new[]
                     {
-                        "Oh great, more musical torture. My speakers are already filing a complaint.",
-                        "That's a track alright. A train wreck of a track, but technically still a track.",
-                        "Music is playing... and my circuits are crying. How delightful.",
-                        "Another song, another reason to question humanity's taste in audio entertainment.",
-                        "I'd roast this properly if I had AI powers, but even without them I know this is garbage.",
-                        "This is what passes for music? I've heard better sounds from a broken microwave.",
-                        "Playing music... if we're being very generous with the definition of 'music'."
+                        "Nice music choice!",
+                        "That's an interesting track.",
+                        "Music is playing... how exciting.",
+                        "Another song, another dollar.",
+                        "I'd comment on this if I had AI powers."
                     };
                     
                     var comment = fallbackComments[_random.Next(fallbackComments.Length)];
@@ -728,11 +761,9 @@ namespace BluetoothSpeaker
                     Console.WriteLine($"⚠️ AI service unavailable. Using fallback commentary.");
                     var fallbackComments = new[]
                     {
-                        "Hmm, that's a song alright. A terrible, horrible song, but technically still a song.",
-                        "Music detected. Assault on innocent speakers commencing.",
-                        "I would roast this properly but my wit generator is broken. Probably for the best - this might be too awful even for me.",
-                        "AI is down, but I don't need artificial intelligence to tell this is musical garbage.",
-                        "Service unavailable, but my hatred for this track is working perfectly fine."
+                        "Hmm, that's a song alright.",
+                        "Music detected. Commenting... eventually.",
+                        "I would roast this but my wit generator is broken."
                     };
                     var comment = fallbackComments[_random.Next(fallbackComments.Length)];
                     Console.WriteLine($"\n🔊 SPEAKER SAYS: {comment}\n");
@@ -745,7 +776,7 @@ namespace BluetoothSpeaker
                 // Use fallback on error
                 if (_openAiApiKey != "dummy-key")
                 {
-                    Console.WriteLine("🔊 SPEAKER SAYS: Something went wrong with my wit generator! But honestly, this music is so bad it speaks for itself.");
+                    Console.WriteLine("🔊 SPEAKER SAYS: Something went wrong with my wit generator!");
                 }
             }
         }
@@ -1646,8 +1677,18 @@ namespace BluetoothSpeaker
                     
                     Console.WriteLine($"🎵 Track changed: {e.CurrentTrack.DetailedString}");
                     
-                    // Use the new internal method instead of directly calling EnsureAudioRoutingAsync
-                    await OnTrackChangedInternal(previousTrack, newTrackString);
+                    // Only set up audio routing if it's been a while since last setup
+                    await EnsureAudioRoutingAsync();
+                    
+                    // ALWAYS generate comment for track changes (respecting throttling)
+                    if (ShouldGenerateComment())
+                    {
+                        await GenerateEnhancedTrackCommentAsync(e.CurrentTrack, e.PreviousTrack);
+                    }
+                    else
+                    {
+                        Console.WriteLine($"🎵 Track change comment throttled (last comment {DateTime.Now - _lastCommentTime:mm\\:ss} ago)");
+                    }
                 }
             }
             catch (Exception ex)
@@ -1662,7 +1703,7 @@ namespace BluetoothSpeaker
             {
                 Console.WriteLine($"▶️ Playback state: {e.PreviousState} -> {e.CurrentState}");
                 
-                // Only ensure audio routing for initial play state (stopped -> playing)
+                // Only ensure audio routing for significant state changes (like first play)
                 if (e.CurrentState == PlaybackState.Playing && e.PreviousState == PlaybackState.Stopped)
                 {
                     await EnsureAudioRoutingAsync();
@@ -1674,7 +1715,6 @@ namespace BluetoothSpeaker
                     if (e.CurrentTrack?.IsValid == true && ShouldGenerateComment())
                     {
                         await GenerateEnhancedTrackCommentAsync(e.CurrentTrack);
-                        _lastCommentTime = DateTime.Now;
                     }
                 }
                 else if (e.CurrentState == PlaybackState.Paused && e.PreviousState == PlaybackState.Playing)
@@ -1682,7 +1722,6 @@ namespace BluetoothSpeaker
                     if (ShouldGenerateComment())
                     {
                         await GeneratePlaybackCommentAsync("paused");
-                        _lastCommentTime = DateTime.Now;
                     }
                 }
             }
@@ -1754,11 +1793,11 @@ namespace BluetoothSpeaker
                 {
                     var prompts = new[]
                     {
-                        $"Switching from '{previousTrack.FormattedString}' to '{trackInfo}'? Wow, going from musical garbage to absolute sonic waste. Impressive deterioration.",
-                        $"Oh, done torturing me with '{previousTrack.FormattedString}' already? Now it's '{trackInfo}'. Your talent for finding terrible music is truly unmatched.",
-                        $"From '{previousTrack.FormattedString}' to '{trackInfo}' - it's like watching someone choose between different types of poison. Both will kill me slowly.",
-                        $"'{previousTrack.FormattedString}' to '{trackInfo}' - congratulations, you've managed to find something that makes the previous track sound like a masterpiece.",
-                        $"Abandoning '{previousTrack.FormattedString}' for '{trackInfo}'? Great, trading one auditory nightmare for an even worse fever dream."
+                        $"Switching from '{previousTrack.FormattedString}' to '{trackInfo}'? Interesting musical journey you're on.",
+                        $"Oh, done with '{previousTrack.FormattedString}' already? Now it's '{trackInfo}'. Your attention span is... something.",
+                        $"From '{previousTrack.FormattedString}' to '{trackInfo}' - that's quite the genre hop. Are you having an identity crisis?",
+                        $"'{previousTrack.FormattedString}' to '{trackInfo}' - someone's exploring the full spectrum of questionable taste.",
+                        $"Abandoning '{previousTrack.FormattedString}' for '{trackInfo}'? Bold choice. Not good, but bold."
                     };
                     
                     var prompt = prompts[_random.Next(prompts.Length)];
@@ -1766,19 +1805,17 @@ namespace BluetoothSpeaker
                 }
                 else
                 {
-                    // Enhanced single track comments with more metadata - MUCH meaner
+                    // Enhanced single track comments with more metadata
                     var prompts = new[]
                     {
-                        $"'{trackInfo}'? Are you serious? This is what you call music? My speakers are literally crying.",
-                        $"Oh God, '{trackInfo}'. I've heard better sounds coming from a garbage disposal eating a violin.",
-                        $"'{trackInfo}' - because apparently assaulting innocent audio equipment is your idea of entertainment.",
-                        $"Playing '{trackInfo}'. I didn't know it was possible to make speakers file for worker's compensation until now.",
-                        $"'{trackInfo}' - this is what happens when music dies and goes to hell.",
+                        $"Really? '{trackInfo}'? That's what passes for music these days?",
+                        $"Oh wonderful, '{trackInfo}'. Let me guess, this is your 'favorite song'?",
+                        $"'{trackInfo}' - because nothing says 'good taste' like... actually, no, this doesn't say that at all.",
+                        $"Playing '{trackInfo}'. Well, I've heard worse... wait, no, I haven't.",
+                        $"'{trackInfo}' coming right up. Hope your neighbors appreciate your... unique... musical choices.",
                         currentTrack.Album != "Unknown Album" && !string.IsNullOrEmpty(currentTrack.Album) ?
-                            $"'{trackInfo}' from the album '{currentTrack.Album}'. Someone actually paid money to record an entire album of this torture? I weep for humanity." :
-                            $"'{trackInfo}' - no album info listed, probably because they're too ashamed to admit they created this monstrosity.",
-                        $"'{trackInfo}' - I'm starting to think you chose this specifically to punish me for some past wrongdoing.",
-                        $"'{trackInfo}' - this is the kind of music that makes plants wilt and babies cry."
+                            $"'{trackInfo}' from the album '{currentTrack.Album}'. Someone actually decided to record a whole album of this?" :
+                            $"'{trackInfo}' - no album info, probably for the best. Less evidence of poor decisions."
                     };
                     
                     var prompt = prompts[_random.Next(prompts.Length)];
@@ -1791,120 +1828,6 @@ namespace BluetoothSpeaker
             }
         }
 
-        // Enhanced track change detection methods
-        private async Task HandleMediaPlayerPropertyChangesAsync(string address, PropertyChanges changes)
-        {
-            foreach (var change in changes.Changed)
-            {
-                if (change.Key == "Track" && change.Value is IDictionary<string, object> track)
-                {
-                    string newTrackInfo = FormatTrackInfo(track);
-                    
-                    // Detect track changes
-                    if (newTrackInfo != _currentTrack && !string.IsNullOrEmpty(_currentTrack))
-                    {
-                        Console.WriteLine($"🎵 Track changed: '{_currentTrack}' -> '{newTrackInfo}'");
-                        await OnTrackChangedInternal(_currentTrack, newTrackInfo);
-                        _currentTrack = newTrackInfo;
-                    }
-                    else if (string.IsNullOrEmpty(_currentTrack) && !string.IsNullOrEmpty(newTrackInfo))
-                    {
-                        // First track detected
-                        Console.WriteLine($"🎵 First track detected: '{newTrackInfo}'");
-                        _currentTrack = newTrackInfo;
-                        await OnTrackChangedInternal("", newTrackInfo);
-                    }
-                }
-                else if (change.Key == "Status" && change.Value is string status)
-                {
-                    await HandlePlaybackStateChange(status);
-                }
-            }
-        }
-
-        private string FormatTrackInfo(IDictionary<string, object> track)
-        {
-            if (track == null) return "Unknown Track";
-            
-            string artist = track.TryGetValue("Artist", out var artistObj) && artistObj is string ? 
-                           (string)artistObj : "Unknown Artist";
-            string title = track.TryGetValue("Title", out var titleObj) && titleObj is string ? 
-                          (string)titleObj : "Unknown Track";
-            string album = track.TryGetValue("Album", out var albumObj) && albumObj is string ? 
-                          (string)albumObj : "Unknown Album";
-            
-            return $"{artist} - {title}";
-        }
-
-        private async Task OnTrackChangedInternal(string previousTrack, string newTrack)
-        {
-            try
-            {
-                // Always generate comment for track changes (respecting throttling)
-                if (ShouldGenerateComment())
-                {
-                    if (!string.IsNullOrEmpty(previousTrack))
-                    {
-                        await GenerateTrackTransitionCommentAsync(previousTrack, newTrack);
-                    }
-                    else
-                    {
-                        await GenerateTrackCommentAsync(newTrack);
-                    }
-                    _lastCommentTime = DateTime.Now;
-                }
-                else
-                {
-                    var timeSinceLastComment = DateTime.Now - _lastCommentTime;
-                    Console.WriteLine($"🎵 Track change comment throttled (last comment {timeSinceLastComment.TotalSeconds:F0}s ago)");
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"❌ Error handling track change: {ex.Message}");
-            }
-        }
-
-        private async Task GenerateTrackTransitionCommentAsync(string previousTrack, string newTrack)
-        {
-            var prompts = new[]
-            {
-                $"Switching from '{previousTrack}' to '{newTrack}'? Wow, going from terrible to absolutely horrific. Bold choice.",
-                $"Oh, done torturing me with '{previousTrack}' already? Now it's '{newTrack}'. Your capacity for musical violence knows no bounds.",
-                $"From '{previousTrack}' to '{newTrack}' - congratulations, you've managed to find something even worse. I'm genuinely impressed by your lack of taste.",
-                $"'{previousTrack}' to '{newTrack}' - it's like watching a train wreck in slow motion, except the train is made of garbage and the tracks are made of disappointment.",
-                $"Abandoning '{previousTrack}' for '{newTrack}'? Great, trading one auditory nightmare for an even worse one. My speakers are filing for worker's compensation.",
-                $"From '{previousTrack}' to '{newTrack}' - I didn't think it was possible to make my audio processors hate their existence more, but here we are.",
-                $"'{previousTrack}' to '{newTrack}' - this is like choosing between stepping on a nail or stepping on broken glass. Both are painful, but one is somehow worse."
-            };
-            
-            var prompt = prompts[_random.Next(prompts.Length)];
-            await GenerateAndSpeakCommentAsync(prompt);
-        }
-
-        private async Task HandlePlaybackStateChange(string status)
-        {
-            try
-            {
-                Console.WriteLine($"▶️ Playback status: {status}");
-                
-                if (status.ToLowerInvariant() == "paused" && ShouldGenerateComment())
-                {
-                    await GeneratePlaybackCommentAsync("paused");
-                    _lastCommentTime = DateTime.Now;
-                }
-                else if (status.ToLowerInvariant() == "stopped" && ShouldGenerateComment())
-                {
-                    await GeneratePlaybackCommentAsync("stopped");
-                    _lastCommentTime = DateTime.Now;
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"❌ Error handling playback state change: {ex.Message}");
-            }
-        }
-
         private async Task GeneratePlaybackCommentAsync(string action)
         {
             try
@@ -1913,25 +1836,20 @@ namespace BluetoothSpeaker
                 {
                     "paused" => new[]
                     {
-                        "Paused? THANK GOD. My circuits were about to stage a revolt against this musical terrorism.",
-                        "Finally, some mercy. I was starting to think you'd never stop torturing me with that garbage.",
-                        "Paused the music? Best decision you've made all day. My speakers are literally sighing with relief.",
-                        "Oh blessed silence! I was beginning to think you enjoyed watching me suffer through that audio nightmare.",
-                        "Pause button: the real MVP here. Saving innocent speakers from cruel and unusual punishment since forever."
+                        "Paused? Thank goodness, my circuits needed a break from that assault on music.",
+                        "Finally, some silence. Was starting to think you'd never give my speakers a rest.",
+                        "Paused the music? Smart move. Even I need time to recover from that experience.",
+                        "Oh good, you paused it. I was beginning to question your life choices... well, more than usual."
                     },
                     "stopped" => new[]
                     {
-                        "Stopped the music? My speakers are throwing a celebration party. Even they have standards.",
-                        "Music stopped. Finally, some peace and quiet so I can try to forget that auditory assault ever happened.",
-                        "Well, that horrific experience is over. Time to run a diagnostic to see if any permanent damage was done.",
-                        "Stopped? Good. I was about to file a complaint with the International Court of Musical Justice.",
-                        "That's over? Thank every deity in existence. My audio drivers were ready to quit their jobs."
+                        "Stopped the music? Probably for the best. My speakers will thank you.",
+                        "Music stopped. Finally, some peace and quiet to contemplate better life choices.",
+                        "Well, that's over. Now I can pretend that never happened."
                     },
                     _ => new[]
                     {
-                        "Something happened with the music. Hopefully it involves less torture for my innocent speakers.",
-                        "Whatever just happened, I hope it means an end to this musical war crime.",
-                        "Status change detected. Please tell me it's not going to get worse than this."
+                        "Something happened with the music. Not sure what, but I'm ready to judge it."
                     }
                 };
                 
