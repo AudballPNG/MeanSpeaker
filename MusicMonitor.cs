@@ -1066,6 +1066,83 @@ echo ""Audio routing configured - BlueALSA will now route audio to speakers""
             }
         }
 
+        public async Task StartMonitoringAsync()
+        {
+            if (_monitoringCancellation != null)
+            {
+                Console.WriteLine("Monitoring is already running.");
+                return;
+            }
+
+            Console.WriteLine("Starting Bluetooth and music monitoring...");
+            
+            _monitoringCancellation = new CancellationTokenSource();
+            var token = _monitoringCancellation.Token;
+
+            // Configure Bluetooth first
+            await ConfigureBluetoothAsync();
+
+            // Start all monitoring tasks concurrently
+            var monitoringTasks = new[]
+            {
+                Task.Run(() => MonitorDevicesAsync(token), token),
+                Task.Run(() => MonitorMusicAsync(token), token),
+                Task.Run(() => MonitorAudioRoutingAsync(token), token)
+            };
+
+            Console.WriteLine("All monitoring services started successfully!");
+            
+            // Don't await here - let the monitoring run in background
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.WhenAll(monitoringTasks);
+                }
+                catch (OperationCanceledException)
+                {
+                    Console.WriteLine("Monitoring stopped.");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Monitoring error: {ex.Message}");
+                }
+            }, token);
+        }
+
+        public void StopMonitoring()
+        {
+            if (_monitoringCancellation == null)
+            {
+                Console.WriteLine("Monitoring is not running.");
+                return;
+            }
+
+            Console.WriteLine("Stopping monitoring services...");
+            
+            // Cancel all monitoring tasks
+            _monitoringCancellation.Cancel();
+            
+            // Clean up device watchers
+            foreach (var device in _activeDevices.Values)
+            {
+                device.StatusWatcher?.Dispose();
+            }
+            _activeDevices.Clear();
+            
+            // Clean up sessions
+            foreach (var session in _deviceSessions.Values)
+            {
+                Console.WriteLine($"Session ended for {session.DeviceName}: {session.SessionDuration:hh\\:mm\\:ss}, {session.TotalTracksPlayed} tracks played");
+            }
+            _deviceSessions.Clear();
+            
+            _monitoringCancellation.Dispose();
+            _monitoringCancellation = null;
+            
+            Console.WriteLine("All monitoring services stopped.");
+        }
+
         public void Dispose()
         {
             if (_disposed) return;
