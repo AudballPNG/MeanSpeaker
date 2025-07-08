@@ -41,7 +41,7 @@ setup_system() {
     echo "Configuring Bluetooth as A2DP sink..."
     sudo tee /etc/bluetooth/main.conf > /dev/null << 'EOF'
 [General]
-Name = SnarkyBluetooth
+Name = The Little Shit
 Class = 0x240404
 DiscoverableTimeout = 0
 PairableTimeout = 0

@@ -27,7 +27,7 @@ sudo systemctl start bluetooth
 echo "Configuring Bluetooth as A2DP sink..."
 sudo tee /etc/bluetooth/main.conf > /dev/null << 'EOF'
 [General]
-Name = SnarkyBluetooth
+Name = The Little Shit
 Class = 0x240404
 DiscoverableTimeout = 0
 PairableTimeout = 0
@@ -153,6 +153,6 @@ echo "Next steps:"
 echo "1. Reboot your Raspberry Pi: sudo reboot"
 echo "2. Set your OpenAI API key: export OPENAI_API_KEY='your-key-here'"
 echo "3. Build and run the application: dotnet run"
-echo "4. Connect your phone to 'SnarkyBluetooth' and start playing music!"
+echo "4. Connect your phone to 'The Little Shit' and start playing music!"
 echo ""
 echo "The speaker will automatically insult your music choices! 🎵"

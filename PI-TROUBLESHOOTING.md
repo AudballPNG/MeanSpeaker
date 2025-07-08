@@ -18,6 +18,35 @@ This single script handles:
 - ✅ Application execution
 - ✅ Auto-start service setup
 
+## Auto-Start Behavior:
+
+### First Run:
+1. The script sets up everything
+2. Runs the application once to test
+3. **Asks if you want auto-start enabled**
+4. If you say "yes", creates a systemd service
+5. **After reboot, the speaker starts automatically!**
+
+### After Reboot:
+- **No manual intervention needed** - the service starts automatically
+- The Bluetooth speaker will be ready and discoverable
+- Just connect your phone and play music
+- The AI commentary will work immediately
+
+### Manual Control (if needed):
+```bash
+# Check if service is running
+sudo systemctl status meanspeaker
+
+# View real-time logs
+sudo journalctl -u meanspeaker -f
+
+# Manually start/stop/restart
+sudo systemctl start meanspeaker
+sudo systemctl stop meanspeaker
+sudo systemctl restart meanspeaker
+```
+
 ## Common Issues and Solutions:
 
 ### 1. Duplicate Assembly Attributes Error
@@ -43,6 +72,10 @@ sudo apt-get install -y bluetooth bluez bluez-tools pulseaudio pulseaudio-module
 
 ### 4. Service Management
 After running the script with auto-start enabled:
+
+**The service runs automatically after reboot - no manual intervention needed!**
+
+But if you need manual control:
 ```bash
 # Check status
 sudo systemctl status meanspeaker
@@ -52,7 +85,20 @@ sudo journalctl -u meanspeaker -f
 
 # Restart service
 sudo systemctl restart meanspeaker
+
+# Stop service (if needed)
+sudo systemctl stop meanspeaker
+
+# Start service (if stopped)
+sudo systemctl start meanspeaker
 ```
+
+### 5. Typical Workflow:
+1. **First time:** Run `./run-on-pi.sh` and choose "yes" for auto-start
+2. **Reboot your Pi:** `sudo reboot`
+3. **That's it!** The speaker is automatically ready
+4. **Connect your phone** to "The Little Shit" 
+5. **Play music** and enjoy the AI commentary
 
 ## Expected Output:
 When running correctly, you should see:

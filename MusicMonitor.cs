@@ -218,18 +218,20 @@ namespace BluetoothSpeaker
             {
                 // Power on and make discoverable
                 await _adapter!.SetAsync("Powered", true);
+                await _adapter.SetAsync("Alias", "The Little Shit");
                 await _adapter.SetAsync("Discoverable", true);
                 await _adapter.SetAsync("DiscoverableTimeout", (uint)0);
                 await _adapter.SetAsync("Pairable", true);
                 await _adapter.SetAsync("PairableTimeout", (uint)0);
 
-                Console.WriteLine("Bluetooth adapter configured and discoverable");
+                Console.WriteLine("Bluetooth adapter configured and discoverable as 'The Little Shit'");
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error configuring Bluetooth: {ex.Message}");
                 // Fall back to command line
                 await RunCommandAsync("bluetoothctl", "power on");
+                await RunCommandAsync("bluetoothctl", "system-alias 'The Little Shit'");
                 await RunCommandAsync("bluetoothctl", "discoverable on");
                 await RunCommandAsync("bluetoothctl", "pairable on");
             }
