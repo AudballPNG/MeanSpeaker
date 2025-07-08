@@ -2,6 +2,8 @@
 
 A Raspberry Pi Bluetooth speaker that plays your music AND provides snarky AI commentary about your music choices using OpenAI's GPT.
 
+**🚀 Setup once, works forever! Automatically starts on boot.**
+
 ## Features
 
 - **🎵 Bluetooth A2DP Audio Sink**: Works like any normal Bluetooth speaker
@@ -9,6 +11,7 @@ A Raspberry Pi Bluetooth speaker that plays your music AND provides snarky AI co
 - **🔊 Text-to-Speech**: Actually speaks the commentary out loud using espeak
 - **📱 Simple Setup**: One script setup, no complex configuration
 - **🔧 Reliable**: Uses proven command-line tools, not complex D-Bus event systems
+- **⚡ Auto-Start**: Runs automatically on boot after one-time setup
 
 ## How It Works
 
@@ -37,43 +40,114 @@ source ~/.bashrc
 ```bash
 git clone <your-repo-url>
 cd BluetoothSpeaker
-chmod +x simple-setup.sh
+chmod +x simple-setup.sh speaker-control.sh
 sudo ./simple-setup.sh
 ```
 
+**The setup now includes auto-start on boot!** After running the setup script, the Bluetooth speaker will automatically start every time the Pi boots.
+
 ### 3. Set OpenAI API Key
 ```bash
+# Option 1: Use the setup helper
+./speaker-control.sh install-api-key
+
+# Option 2: Manual setup
 export OPENAI_API_KEY="your-api-key-here"
 echo 'export OPENAI_API_KEY="your-api-key-here"' >> ~/.bashrc
 ```
 
-### 4. Run the Speaker
+### 4. Reboot and Enjoy!
 ```bash
-dotnet run
+sudo reboot
+```
+
+After reboot, your Pi will automatically:
+- Start the Bluetooth speaker service
+- Be discoverable as "The Little Shit"
+- Accept connections and provide AI commentary
+
+Simply connect your phone and play music!
+
+**Manual control (if needed):**
+```bash
+# Service management
+./speaker-control.sh status    # Check status
+./speaker-control.sh stop      # Stop service
+./speaker-control.sh start     # Start service
+./speaker-control.sh logs      # View logs
+
+# Manual run (for testing)
+./speaker-control.sh manual
+```
+
+## Service Management
+
+**The speaker service starts automatically on boot after setup!**
+
+Use the included control script for management:
+
+```bash
+# Check what's happening
+./speaker-control.sh status     # Service status
+./speaker-control.sh logs       # View real-time logs
+
+# Control the service
+./speaker-control.sh start      # Start service
+./speaker-control.sh stop       # Stop service
+./speaker-control.sh restart    # Restart service
+
+# Auto-start management
+./speaker-control.sh enable     # Enable auto-start (already done by setup)
+./speaker-control.sh disable    # Disable auto-start
+
+# Testing and troubleshooting
+./speaker-control.sh manual     # Run manually for testing
 ```
 
 That's it! Your Pi is now discoverable as "The Little Shit".
 
 ## Usage
 
+**After setup, your speaker runs automatically on boot!**
+
 1. **Connect your phone** to "The Little Shit" via Bluetooth
 2. **Play music** - it works like any normal Bluetooth speaker
 3. **Listen to the roasts** - the AI will occasionally comment on your music choices
 
-### Commands
-While the app is running, you can type:
+### Service Control
+```bash
+./speaker-control.sh status    # Check if running
+./speaker-control.sh logs      # Watch live commentary
+./speaker-control.sh restart   # Restart if needed
+```
+
+### Manual Testing
+While running manually (`./speaker-control.sh manual`), you can type:
 - `status` - Show connection and service status
 - `test` - Force generate a test comment
 - `quit` - Stop the application
 
 ## Troubleshooting
 
+### Service Not Starting
+```bash
+# Check service status
+./speaker-control.sh status
+
+# Check logs for errors
+./speaker-control.sh logs
+
+# Restart services
+sudo systemctl restart bluetooth bluealsa bluealsa-aplay
+./speaker-control.sh restart
+```
+
 ### No Audio Playing
 ```bash
-# Check services
+# Check audio services
 sudo systemctl status bluealsa bluealsa-aplay
 
-# Restart if needed
+# Restart audio routing
 sudo systemctl restart bluealsa-aplay
 ```
 
@@ -82,13 +156,28 @@ sudo systemctl restart bluealsa-aplay
 # Check Bluetooth
 bluetoothctl devices Connected
 bluetoothctl show
+
+# Make sure discoverable
+sudo bluetoothctl discoverable on
 ```
 
 ### No Track Detection
 ```bash
-# Check playerctl
+# Check if playerctl works
 playerctl status
 playerctl metadata
+
+# Check service logs
+./speaker-control.sh logs
+```
+
+### API Key Issues
+```bash
+# Reinstall API key
+./speaker-control.sh install-api-key
+
+# Check environment
+echo $OPENAI_API_KEY
 ```
 
 ## How It's Different

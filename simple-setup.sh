@@ -91,8 +91,57 @@ sudo bluetoothctl system-alias 'The Little Shit'
 sudo bluetoothctl discoverable on
 sudo bluetoothctl pairable on
 
+# Create systemd service for the Bluetooth speaker program
+echo "🤖 Setting up auto-start service..."
+sudo tee /etc/systemd/system/bluetooth-speaker.service > /dev/null << EOF
+[Unit]
+Description=Bluetooth Speaker with AI Commentary
+After=bluetooth.service bluealsa.service network.target
+Wants=bluetooth.service bluealsa.service
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/BluetoothSpeaker
+ExecStart=/usr/bin/dotnet run --project /home/pi/BluetoothSpeaker/BluetoothSpeaker.csproj
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Environment variables
+Environment=DOTNET_ENVIRONMENT=Production
+Environment=DOTNET_CLI_TELEMETRY_OPTOUT=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Copy project files to /home/pi/BluetoothSpeaker
+echo "📁 Copying project files..."
+sudo mkdir -p /home/pi/BluetoothSpeaker
+sudo cp -r . /home/pi/BluetoothSpeaker/
+sudo chown -R pi:pi /home/pi/BluetoothSpeaker
+sudo chmod +x /home/pi/BluetoothSpeaker/speaker-control.sh
+
+# Enable the service
+echo "🚀 Enabling auto-start service..."
+sudo systemctl daemon-reload
+sudo systemctl enable bluetooth-speaker.service
+
 echo ""
 echo "✅ Setup complete!"
 echo "🎵 Your Pi is now discoverable as 'The Little Shit'"
-echo "📱 Connect your phone and run: dotnet run"
+echo "🤖 The AI commentary will start automatically on boot"
+echo "📱 Connect your phone and the speaker will work automatically"
+echo ""
+echo "🔧 Service management:"
+echo "  Start:   sudo systemctl start bluetooth-speaker"
+echo "  Stop:    sudo systemctl stop bluetooth-speaker"
+echo "  Status:  sudo systemctl status bluetooth-speaker"
+echo "  Logs:    sudo journalctl -u bluetooth-speaker -f"
+echo "  Or use:  ./speaker-control.sh"
 echo ""
