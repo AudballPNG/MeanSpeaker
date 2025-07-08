@@ -73,19 +73,10 @@ namespace BluetoothSpeaker
 
         private async Task MonitorEverythingAsync(CancellationToken cancellationToken)
         {
-            int cycleCount = 0;
             while (!cancellationToken.IsCancellationRequested)
             {
                 try
                 {
-                    cycleCount++;
-                    
-                    // Show status every 30 cycles (1 minute) to reduce spam
-                    if (cycleCount % 30 == 1)
-                    {
-                        Console.WriteLine($"🔄 Monitoring cycle {cycleCount} - Device: {_connectedDeviceName ?? "None"} - Track: {_currentTrack ?? "None"}");
-                    }
-                    
                     // 1. Check for connected devices (every cycle)
                     await CheckConnectedDevicesAsync();
                     
@@ -256,7 +247,7 @@ namespace BluetoothSpeaker
                 var blualsaMetadata = await GetBlueALSAMetadataAsync();
                 if (!string.IsNullOrEmpty(blualsaMetadata) && blualsaMetadata != _currentTrack)
                 {
-                    Console.WriteLine($"🎵 Now playing (BlueALSA): {blualsaMetadata}");
+                    Console.WriteLine($"🎵 Now playing: {blualsaMetadata}");
                     _currentTrack = blualsaMetadata;
                     
                     // Ensure audio routing is working
@@ -278,7 +269,7 @@ namespace BluetoothSpeaker
                     
                     if (!string.IsNullOrEmpty(trackInfo) && trackInfo != _currentTrack)
                     {
-                        Console.WriteLine($"🎵 Now playing (playerctl): {trackInfo}");
+                        Console.WriteLine($"🎵 Now playing: {trackInfo}");
                         _currentTrack = trackInfo;
                         
                         // Ensure audio routing is working
@@ -293,20 +284,6 @@ namespace BluetoothSpeaker
                     return;
                 }
                 
-                // Method 2b: Check specific playerctl players
-                var playerTrackInfo = await CheckPlayerctlPlayersAsync();
-                if (!string.IsNullOrEmpty(playerTrackInfo) && playerTrackInfo != _currentTrack)
-                {
-                    Console.WriteLine($"🎵 Now playing (specific player): {playerTrackInfo}");
-                    _currentTrack = playerTrackInfo;
-                    
-                    if (ShouldGenerateComment())
-                    {
-                        await GenerateTrackCommentAsync(playerTrackInfo);
-                    }
-                    return;
-                }
-                
                 // Method 3: Try bluetoothctl as fallback
                 if (!string.IsNullOrEmpty(_connectedDeviceAddress) && _connectedDeviceAddress != "detected")
                 {
@@ -317,7 +294,7 @@ namespace BluetoothSpeaker
                         
                         if (!string.IsNullOrEmpty(trackInfo) && trackInfo != _currentTrack)
                         {
-                            Console.WriteLine($"🎵 Now playing (bluetoothctl): {trackInfo}");
+                            Console.WriteLine($"🎵 Now playing: {trackInfo}");
                             _currentTrack = trackInfo;
                             
                             // Ensure audio routing is working
@@ -327,34 +304,6 @@ namespace BluetoothSpeaker
                             {
                                 await GenerateTrackCommentAsync(trackInfo);
                             }
-                        }
-                    }
-                }
-                
-                // Method 4: Try alternative playerctl commands
-                var title = await RunCommandWithOutputAsync("playerctl", "metadata title");
-                var artist = await RunCommandWithOutputAsync("playerctl", "metadata artist");
-                
-                if (!string.IsNullOrEmpty(title?.Trim()) || !string.IsNullOrEmpty(artist?.Trim()))
-                {
-                    var trackInfo = "";
-                    if (!string.IsNullOrEmpty(artist?.Trim()) && !string.IsNullOrEmpty(title?.Trim()))
-                    {
-                        trackInfo = $"{artist.Trim()} - {title.Trim()}";
-                    }
-                    else if (!string.IsNullOrEmpty(title?.Trim()))
-                    {
-                        trackInfo = title.Trim();
-                    }
-                    
-                    if (!string.IsNullOrEmpty(trackInfo) && trackInfo != _currentTrack)
-                    {
-                        Console.WriteLine($"🎵 Now playing (playerctl specific): {trackInfo}");
-                        _currentTrack = trackInfo;
-                        
-                        if (ShouldGenerateComment())
-                        {
-                            await GenerateTrackCommentAsync(trackInfo);
                         }
                     }
                 }
@@ -720,12 +669,12 @@ namespace BluetoothSpeaker
         private async Task RunBasicSetupAsync()
         {
             Console.WriteLine("📦 Installing basic packages...");
-            await RunCommandSilentlyAsync("sudo", "apt-get update");
-            await RunCommandSilentlyAsync("sudo", "apt-get install -y bluetooth bluez bluez-tools bluealsa alsa-utils playerctl espeak");
+            await RunCommandSilentlyAsync("apt-get", "update");
+            await RunCommandSilentlyAsync("apt-get", "install -y bluetooth bluez bluez-tools bluealsa alsa-utils playerctl espeak");
             
             Console.WriteLine("� Starting services...");
-            await RunCommandSilentlyAsync("sudo", "systemctl enable bluetooth");
-            await RunCommandSilentlyAsync("sudo", "systemctl start bluetooth");
+            await RunCommandSilentlyAsync("systemctl", "enable bluetooth");
+            await RunCommandSilentlyAsync("systemctl", "start bluetooth");
             
             Console.WriteLine("📡 Making Bluetooth discoverable...");
             await RunCommandSilentlyAsync("bluetoothctl", "power on");
@@ -1076,111 +1025,64 @@ namespace BluetoothSpeaker
             }
         }
 
-        private async Task<string> CheckPlayerctlPlayersAsync()
-        {
-            try
-            {
-                // Check what players are available
-                var players = await RunCommandWithOutputAsync("playerctl", "--list-all");
-                if (!string.IsNullOrEmpty(players))
-                {
-                    // Try each player specifically
-                    var playerList = players.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-                    foreach (var player in playerList)
-                    {
-                        var playerTrimmed = player.Trim();
-                        if (!string.IsNullOrEmpty(playerTrimmed))
-                        {
-                            // Try to get metadata from this specific player
-                            var metadata = await RunCommandWithOutputAsync("playerctl", $"--player={playerTrimmed} metadata");
-                            if (!string.IsNullOrEmpty(metadata))
-                            {
-                                var trackInfo = ParseTrackInfo(metadata);
-                                if (!string.IsNullOrEmpty(trackInfo))
-                                {
-                                    return trackInfo;
-                                }
-                            }
-                            
-                            // Try getting title and artist separately
-                            var title = await RunCommandWithOutputAsync("playerctl", $"--player={playerTrimmed} metadata title");
-                            var artist = await RunCommandWithOutputAsync("playerctl", $"--player={playerTrimmed} metadata artist");
-                            
-                            if (!string.IsNullOrEmpty(title?.Trim()) || !string.IsNullOrEmpty(artist?.Trim()))
-                            {
-                                var trackInfo = "";
-                                if (!string.IsNullOrEmpty(artist?.Trim()) && !string.IsNullOrEmpty(title?.Trim()))
-                                {
-                                    trackInfo = $"{artist.Trim()} - {title.Trim()}";
-                                }
-                                else if (!string.IsNullOrEmpty(title?.Trim()))
-                                {
-                                    trackInfo = title.Trim();
-                                }
-                                
-                                if (!string.IsNullOrEmpty(trackInfo))
-                                {
-                                    return trackInfo;
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                return "";
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"❌ Error checking playerctl players: {ex.Message}");
-                return "";
-            }
-        }
-
         public async Task DebugTrackDetectionAsync()
         {
             Console.WriteLine("=== TRACK DETECTION DEBUG ===");
             
-            // Test all track detection methods
-            Console.WriteLine("\n1. Testing BlueALSA metadata...");
-            var blualsaResult = await GetBlueALSAMetadataAsync();
-            Console.WriteLine($"   Result: '{blualsaResult}'");
-            
-            Console.WriteLine("\n2. Testing playerctl metadata...");
+            Console.WriteLine("\n1. Testing playerctl metadata...");
             var playerctlResult = await RunCommandWithOutputAsync("playerctl", "metadata");
-            Console.WriteLine($"   Raw output: '{playerctlResult}'");
-            if (!string.IsNullOrEmpty(playerctlResult))
+            Console.WriteLine($"   Raw output length: {playerctlResult?.Length ?? 0} characters");
+            if (!string.IsNullOrEmpty(playerctlResult) && playerctlResult.Length < 500)
             {
+                Console.WriteLine($"   Raw output: {playerctlResult}");
                 var parsed = ParseTrackInfo(playerctlResult);
-                Console.WriteLine($"   Parsed: '{parsed}'");
+                Console.WriteLine($"   Parsed result: '{parsed}'");
             }
             
-            Console.WriteLine("\n3. Testing playerctl players...");
-            var playersResult = await CheckPlayerctlPlayersAsync();
-            Console.WriteLine($"   Result: '{playersResult}'");
-            
-            Console.WriteLine("\n4. Testing playerctl title/artist...");
+            Console.WriteLine("\n2. Testing playerctl title/artist separately...");
             var title = await RunCommandWithOutputAsync("playerctl", "metadata title");
             var artist = await RunCommandWithOutputAsync("playerctl", "metadata artist");
             Console.WriteLine($"   Title: '{title?.Trim()}'");
             Console.WriteLine($"   Artist: '{artist?.Trim()}'");
             
-            Console.WriteLine("\n5. Testing bluetoothctl info...");
+            Console.WriteLine("\n3. Testing playerctl players list...");
+            var players = await RunCommandWithOutputAsync("playerctl", "--list-all");
+            Console.WriteLine($"   Available players: '{players?.Trim()}'");
+            
+            Console.WriteLine("\n4. Testing bluetoothctl info...");
             if (!string.IsNullOrEmpty(_connectedDeviceAddress) && _connectedDeviceAddress != "detected")
             {
                 var deviceInfo = await RunCommandWithOutputAsync("bluetoothctl", "info " + _connectedDeviceAddress);
-                Console.WriteLine($"   Raw output: '{deviceInfo}'");
+                Console.WriteLine($"   Device info length: {deviceInfo?.Length ?? 0} characters");
                 if (!string.IsNullOrEmpty(deviceInfo))
                 {
                     var parsed = ParseBluetoothctlTrackInfo(deviceInfo);
-                    Console.WriteLine($"   Parsed: '{parsed}'");
+                    Console.WriteLine($"   Parsed track info: '{parsed}'");
+                    
+                    // Show relevant lines
+                    var lines = deviceInfo.Split('\n');
+                    foreach (var line in lines)
+                    {
+                        if (line.Contains("Artist:") || line.Contains("Title:") || line.Contains("Track:"))
+                        {
+                            Console.WriteLine($"   Found: {line.Trim()}");
+                        }
+                    }
                 }
             }
             else
             {
-                Console.WriteLine("   No device connected");
+                Console.WriteLine("   No device connected for testing");
             }
+            
+            Console.WriteLine("\n=== Current State ===");
+            Console.WriteLine($"Connected Device: {_connectedDeviceName ?? "None"}");
+            Console.WriteLine($"Device Address: {_connectedDeviceAddress ?? "None"}");
+            Console.WriteLine($"Current Track: {_currentTrack ?? "None"}");
             
             Console.WriteLine("\n=== END DEBUG ===");
         }
+
+        // ...existing code...
     }
 }
