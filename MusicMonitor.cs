@@ -31,12 +31,7 @@ namespace BluetoothSpeaker
         private string _connectedDeviceName = "";
         private string _connectedDeviceAddress = "";
         private DateTime _lastCommentTime = DateTime.MinValue;
-        private readonly TimeSpan _commentThrottle = TimeSpan.FromSeconds(10); // Reduced from 30 to 10 seconds
-        
-        // Audio routing state to prevent unnecessary restarts
-        private DateTime _lastAudioRoutingSetup = DateTime.MinValue;
-        private readonly TimeSpan _audioRoutingCooldown = TimeSpan.FromSeconds(15);
-        private bool _audioRoutingActive = false;
+        private readonly TimeSpan _commentThrottle = TimeSpan.FromSeconds(30);
         
         private CancellationTokenSource? _monitoringCancellation;
         private bool _disposed = false;
@@ -346,7 +341,6 @@ namespace BluetoothSpeaker
                     _connectedDeviceAddress = "";
                     _connectedDeviceName = "";
                     _currentTrack = "";
-                    _audioRoutingActive = false; // Reset audio routing state
                 }
             }
             catch (Exception ex)
@@ -495,66 +489,38 @@ namespace BluetoothSpeaker
         {
             try
             {
-                // Check if we recently set up audio routing to avoid unnecessary restarts
-                var timeSinceLastSetup = DateTime.Now - _lastAudioRoutingSetup;
-                if (_audioRoutingActive && timeSinceLastSetup < _audioRoutingCooldown)
-                {
-                    Console.WriteLine("🔧 Audio routing recently configured, skipping restart");
-                    return;
-                }
-                
                 Console.WriteLine("🔧 Ensuring audio routing is active...");
                 
-                // Method 1: Check if bluealsa-aplay is running (but don't restart unless really needed)
+                // Method 1: Check if bluealsa-aplay is running and restart if needed
                 var status = await RunCommandWithOutputAsync("systemctl", "is-active bluealsa-aplay");
                 if (status.Trim() != "active")
                 {
-                    Console.WriteLine("🔧 bluealsa-aplay service not active, restarting...");
+                    Console.WriteLine("🔧 Restarting bluealsa-aplay service...");
                     await RunCommandSilentlyAsync("sudo", "systemctl restart bluealsa-aplay");
                     await Task.Delay(2000); // Give it time to start
-                    _lastAudioRoutingSetup = DateTime.Now;
-                    _audioRoutingActive = true;
-                }
-                else
-                {
-                    Console.WriteLine("✅ bluealsa-aplay service is already active");
-                    _audioRoutingActive = true;
                 }
                 
-                // Method 2: Use our dynamic routing script if available (only if not recently run)
-                if (File.Exists("/usr/local/bin/route-bluetooth-audio.sh") && timeSinceLastSetup >= _audioRoutingCooldown)
+                // Method 2: Use our dynamic routing script if available
+                if (File.Exists("/usr/local/bin/route-bluetooth-audio.sh"))
                 {
                     Console.WriteLine("🔧 Running dynamic audio routing...");
                     await RunCommandSilentlyAsync("/usr/local/bin/route-bluetooth-audio.sh", "");
-                    _lastAudioRoutingSetup = DateTime.Now;
                 }
                 
-                // Method 3: For new device connections only, set up direct routing
-                if (!string.IsNullOrEmpty(_connectedDeviceAddress) && 
-                    _connectedDeviceAddress != "detected" && 
-                    timeSinceLastSetup >= _audioRoutingCooldown)
+                // Method 3: Direct bluealsa-aplay for connected device if we have one
+                if (!string.IsNullOrEmpty(_connectedDeviceAddress) && _connectedDeviceAddress != "detected")
                 {
-                    Console.WriteLine($"🔧 Verifying audio routing for {_connectedDeviceAddress}...");
+                    Console.WriteLine($"🔧 Starting direct audio routing for {_connectedDeviceAddress}...");
                     
-                    // Check if a bluealsa-aplay process is already running for this device
-                    var existingProcess = await RunCommandWithOutputAsync("pgrep", $"-f 'bluealsa-aplay.*{_connectedDeviceAddress}'");
+                    // Kill existing processes first
+                    await RunCommandSilentlyAsync("pkill", "-f 'bluealsa-aplay.*" + _connectedDeviceAddress + "'");
+                    await Task.Delay(1000);
                     
-                    if (string.IsNullOrEmpty(existingProcess?.Trim()))
+                    // Start new process for this device
+                    _ = Task.Run(async () =>
                     {
-                        Console.WriteLine($"🔧 Starting direct audio routing for {_connectedDeviceAddress}...");
-                        
-                        // Start new process for this device (only if not already running)
-                        _ = Task.Run(async () =>
-                        {
-                            await RunCommandAsync("bluealsa-aplay", $"--pcm-buffer-time=250000 {_connectedDeviceAddress}");
-                        });
-                        
-                        _lastAudioRoutingSetup = DateTime.Now;
-                    }
-                    else
-                    {
-                        Console.WriteLine($"✅ bluealsa-aplay already running for {_connectedDeviceAddress}");
-                    }
+                        await RunCommandAsync("bluealsa-aplay", $"--pcm-buffer-time=250000 {_connectedDeviceAddress}");
+                    });
                 }
                 
                 Console.WriteLine("✅ Audio routing setup complete");
@@ -653,8 +619,9 @@ namespace BluetoothSpeaker
         {
             var timeSinceLastComment = DateTime.Now - _lastCommentTime;
             var throttleCheck = timeSinceLastComment > _commentThrottle;
-            // Always generate comments for track changes, but respect throttling
-            return throttleCheck;
+            var randomCheck = _random.Next(0, 3) == 0; // 33% chance
+            
+            return throttleCheck && randomCheck;
         }
 
         private async Task GenerateWelcomeCommentAsync(string deviceName)
@@ -1677,17 +1644,11 @@ namespace BluetoothSpeaker
                     
                     Console.WriteLine($"🎵 Track changed: {e.CurrentTrack.DetailedString}");
                     
-                    // Only set up audio routing if it's been a while since last setup
                     await EnsureAudioRoutingAsync();
                     
-                    // ALWAYS generate comment for track changes (respecting throttling)
                     if (ShouldGenerateComment())
                     {
                         await GenerateEnhancedTrackCommentAsync(e.CurrentTrack, e.PreviousTrack);
-                    }
-                    else
-                    {
-                        Console.WriteLine($"🎵 Track change comment throttled (last comment {DateTime.Now - _lastCommentTime:mm\\:ss} ago)");
                     }
                 }
             }
@@ -1703,8 +1664,7 @@ namespace BluetoothSpeaker
             {
                 Console.WriteLine($"▶️ Playback state: {e.PreviousState} -> {e.CurrentState}");
                 
-                // Only ensure audio routing for significant state changes (like first play)
-                if (e.CurrentState == PlaybackState.Playing && e.PreviousState == PlaybackState.Stopped)
+                if (e.CurrentState == PlaybackState.Playing && e.CurrentTrack?.IsValid == true)
                 {
                     await EnsureAudioRoutingAsync();
                 }
