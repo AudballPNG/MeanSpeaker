@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -12,6 +13,55 @@ using Tmds.DBus;
 
 namespace BluetoothSpeaker
 {
+    // Session memory for each connected device
+    public class DeviceSession
+    {
+        public string DeviceName { get; set; } = "";
+        public string DeviceAddress { get; set; } = "";
+        public DateTime ConnectedAt { get; set; } = DateTime.Now;
+        public List<string> PlayedTracks { get; set; } = new();
+        public List<string> GeneratedComments { get; set; } = new();
+        public Dictionary<string, int> TrackPlayCount { get; set; } = new();
+        public string CurrentTrack { get; set; } = "";
+        public string PreviousTrack { get; set; } = "";
+        public DateTime LastCommentTime { get; set; } = DateTime.MinValue;
+        public bool IsPlaying { get; set; } = false;
+        public int TotalTracksPlayed { get; set; } = 0;
+        
+        public void AddTrack(string track)
+        {
+            if (string.IsNullOrEmpty(track)) return;
+            
+            PreviousTrack = CurrentTrack;
+            CurrentTrack = track;
+            
+            if (!PlayedTracks.Contains(track))
+            {
+                PlayedTracks.Add(track);
+            }
+            
+            TrackPlayCount[track] = TrackPlayCount.GetValueOrDefault(track, 0) + 1;
+            TotalTracksPlayed++;
+        }
+        
+        public void AddComment(string comment)
+        {
+            GeneratedComments.Add($"[{DateTime.Now:HH:mm:ss}] {comment}");
+        }
+        
+        public bool HasPlayedBefore(string track)
+        {
+            return TrackPlayCount.ContainsKey(track);
+        }
+        
+        public int GetPlayCount(string track)
+        {
+            return TrackPlayCount.GetValueOrDefault(track, 0);
+        }
+        
+        public TimeSpan SessionDuration => DateTime.Now - ConnectedAt;
+    }
+
     public class MusicMonitor : IDisposable
     {
         private readonly string _openAiApiKey;
@@ -24,12 +74,11 @@ namespace BluetoothSpeaker
         private ObjectPath _adapterPath;
         private Dictionary<string, (IDevice1 Device, ObjectPath Path, IMediaPlayer1? Player, ObjectPath? PlayerPath, IDisposable? StatusWatcher)> _activeDevices = new();
         
-        // State tracking
-        private string _currentTrack = string.Empty;
-        private string _previousTrack = string.Empty;
-        private DateTime _lastCommentTime = DateTime.MinValue;
-        private readonly TimeSpan _commentThrottle = TimeSpan.FromMinutes(2);
-        private bool _isPlaying = false;
+        // Session-based memory for each device
+        private Dictionary<string, DeviceSession> _deviceSessions = new();
+        
+        // Global state tracking
+        private readonly TimeSpan _commentThrottle = TimeSpan.FromMinutes(1); // Reduced throttle for better session experience
         
         // Setup tracking
         private readonly string _setupMarkerFile = "/etc/bluetooth-speaker-setup-complete";
@@ -94,12 +143,32 @@ namespace BluetoothSpeaker
             
             _monitoringCancellation?.Cancel();
             
-            // Clean up watchers
-            foreach (var device in _activeDevices.Values)
+            // Clean up watchers and display session summaries
+            foreach (var (address, deviceEntry) in _activeDevices)
             {
-                device.StatusWatcher?.Dispose();
+                deviceEntry.StatusWatcher?.Dispose();
+                
+                if (_deviceSessions.TryGetValue(address, out var session))
+                {
+                    Console.WriteLine($"\n=== SESSION SUMMARY FOR {session.DeviceName} ===");
+                    Console.WriteLine($"Connected: {session.ConnectedAt:yyyy-MM-dd HH:mm:ss}");
+                    Console.WriteLine($"Session Duration: {session.SessionDuration:hh\\:mm\\:ss}");
+                    Console.WriteLine($"Total Tracks Played: {session.TotalTracksPlayed}");
+                    Console.WriteLine($"Unique Tracks: {session.PlayedTracks.Count}");
+                    Console.WriteLine($"Comments Generated: {session.GeneratedComments.Count}");
+                    
+                    if (session.TrackPlayCount.Any())
+                    {
+                        var mostPlayed = session.TrackPlayCount.OrderByDescending(kvp => kvp.Value).First();
+                        Console.WriteLine($"Most Played: {mostPlayed.Key} ({mostPlayed.Value} times)");
+                    }
+                    
+                    Console.WriteLine("=== END SESSION SUMMARY ===\n");
+                }
             }
+            
             _activeDevices.Clear();
+            _deviceSessions.Clear();
             
             Console.WriteLine("Monitoring stopped.");
         }
@@ -167,35 +236,69 @@ namespace BluetoothSpeaker
                 try
                 {
                     var devices = await _objectManager!.GetConnectedDevicesAsync();
+                    var currentDeviceAddresses = devices.Select(d => d.Address).ToHashSet();
                     
+                    // Check for disconnected devices and clean up their sessions
+                    var disconnectedDevices = _activeDevices.Keys.Where(addr => !currentDeviceAddresses.Contains(addr)).ToList();
+                    foreach (var address in disconnectedDevices)
+                    {
+                        if (_deviceSessions.TryGetValue(address, out var session))
+                        {
+                            Console.WriteLine($"Device {session.DeviceName} disconnected. Session lasted {session.SessionDuration:hh\\:mm\\:ss}");
+                            Console.WriteLine($"  Total tracks played: {session.TotalTracksPlayed}");
+                            Console.WriteLine($"  Comments generated: {session.GeneratedComments.Count}");
+                            
+                            // Clean up session memory
+                            _deviceSessions.Remove(address);
+                        }
+                        
+                        // Clean up device watcher
+                        if (_activeDevices.TryGetValue(address, out var deviceEntry))
+                        {
+                            deviceEntry.StatusWatcher?.Dispose();
+                            _activeDevices.Remove(address);
+                        }
+                    }
+                    
+                    // Handle new device connections
                     foreach (var (device, path, address, name) in devices)
                     {
                         if (!_activeDevices.ContainsKey(address))
                         {
                             Console.WriteLine($"New device connected: {name} ({address})");
                             
+                            // Create new session for this device
+                            var session = new DeviceSession
+                            {
+                                DeviceName = name,
+                                DeviceAddress = address,
+                                ConnectedAt = DateTime.Now
+                            };
+                            _deviceSessions[address] = session;
+                            
                             // Set device as trusted
                             await device.SetAsync("Trusted", true);
-                            
-                            // Find media player
-                            var playerInfo = await _objectManager.FindMediaPlayerForDeviceAsync(path);
-                            
-                            IDisposable? watcher = null;
-                            
-                            if (playerInfo.HasValue)
+                                  // Find media player
+                        var playerInfo = await _objectManager.FindMediaPlayerForDeviceAsync(path);
+                        
+                        IDisposable? watcher = null;
+                        
+                        if (playerInfo.HasValue)
+                        {
+                            // Set up media player watcher
+                            watcher = await playerInfo.Value.Player.WatchPropertiesAsync(changes =>
                             {
-                                // Set up media player watcher
-                                watcher = await playerInfo.Value.Player.WatchPropertiesAsync(changes =>
-                                    HandleMediaPlayerChangesAsync(address, changes));
-                                
-                                Console.WriteLine($"Media player found for {name}");
-                            }
+                                _ = Task.Run(() => HandleMediaPlayerChangesAsync(address, changes));
+                            });
+                            
+                            Console.WriteLine($"Media player found for {name}");
+                        }
                             
                             var deviceEntry = (device, path, playerInfo?.Player, playerInfo?.Path, watcher);
                             _activeDevices[address] = deviceEntry;
                             
                             // Welcome message
-                            await GenerateCommentAsync($"Oh great, {name} just connected. Let me guess, you're about to blast some questionable music choices through me?");
+                            await GenerateCommentForDeviceAsync(address, $"Oh great, {name} just connected. Let me guess, you're about to blast some questionable music choices through me?");
                         }
                     }
                     
@@ -227,36 +330,44 @@ namespace BluetoothSpeaker
                     {
                         var trackInfo = ParseTrackInfo(metadata);
                         
-                        if (!string.IsNullOrEmpty(trackInfo) && trackInfo != _currentTrack)
+                        if (!string.IsNullOrEmpty(trackInfo))
                         {
-                            _previousTrack = _currentTrack;
-                            _currentTrack = trackInfo;
-                            
-                            Console.WriteLine($"Now playing: {_currentTrack}");
-                            
-                            // Maybe generate a comment
-                            if (ShouldGenerateComment())
+                            // Find which device is playing (simplified - could be enhanced)
+                            var activeSession = _deviceSessions.Values.FirstOrDefault();
+                            if (activeSession != null && trackInfo != activeSession.CurrentTrack)
                             {
-                                await GenerateCommentAboutTrackAsync(_currentTrack);
+                                activeSession.AddTrack(trackInfo);
+                                
+                                Console.WriteLine($"Now playing: {trackInfo}");
+                                
+                                // Generate comment with session context
+                                if (ShouldGenerateCommentForDevice(activeSession.DeviceAddress))
+                                {
+                                    await GenerateCommentAboutTrackAsync(activeSession.DeviceAddress, trackInfo);
+                                }
                             }
                         }
                     }
                     
-                    // Check playback state
-                    bool wasPlaying = _isPlaying;
-                    _isPlaying = status.Contains("Playing");
-                    
-                    if (_isPlaying && !wasPlaying)
+                    // Check playback state for all sessions
+                    bool isPlaying = status.Contains("Playing");
+                    foreach (var session in _deviceSessions.Values)
                     {
-                        Console.WriteLine("Music started playing");
-                    }
-                    else if (!_isPlaying && wasPlaying)
-                    {
-                        Console.WriteLine("Music paused/stopped");
+                        bool wasPlaying = session.IsPlaying;
+                        session.IsPlaying = isPlaying;
                         
-                        if (_random.Next(0, 4) == 0) // 25% chance
+                        if (isPlaying && !wasPlaying)
                         {
-                            await GenerateCommentAsync("What, couldn't handle the truth about your music taste? Good choice pausing that.");
+                            Console.WriteLine($"[{session.DeviceName}] Music started playing");
+                        }
+                        else if (!isPlaying && wasPlaying)
+                        {
+                            Console.WriteLine($"[{session.DeviceName}] Music paused/stopped");
+                            
+                            if (_random.Next(0, 4) == 0) // 25% chance
+                            {
+                                await GenerateCommentForDeviceAsync(session.DeviceAddress, "What, couldn't handle the truth about your music taste? Good choice pausing that.");
+                            }
                         }
                     }
                     
@@ -278,6 +389,9 @@ namespace BluetoothSpeaker
         {
             try
             {
+                if (!_deviceSessions.TryGetValue(deviceAddress, out var session))
+                    return;
+
                 foreach (var change in changes.Changed)
                 {
                     if (change.Key == "Track")
@@ -286,16 +400,15 @@ namespace BluetoothSpeaker
                         {
                             var trackInfo = FormatTrackInfo(trackDict);
                             
-                            if (!string.IsNullOrEmpty(trackInfo) && trackInfo != _currentTrack)
+                            if (!string.IsNullOrEmpty(trackInfo) && trackInfo != session.CurrentTrack)
                             {
-                                _previousTrack = _currentTrack;
-                                _currentTrack = trackInfo;
+                                session.AddTrack(trackInfo);
                                 
-                                Console.WriteLine($"Track changed: {_currentTrack}");
+                                Console.WriteLine($"[{session.DeviceName}] Track changed: {trackInfo}");
                                 
-                                if (ShouldGenerateComment())
+                                if (ShouldGenerateCommentForDevice(deviceAddress))
                                 {
-                                    await GenerateCommentAboutTrackAsync(_currentTrack);
+                                    await GenerateCommentAboutTrackAsync(deviceAddress, trackInfo);
                                 }
                             }
                         }
@@ -303,7 +416,7 @@ namespace BluetoothSpeaker
                     else if (change.Key == "Status")
                     {
                         var status = change.Value?.ToString() ?? "";
-                        Console.WriteLine($"Playback status: {status}");
+                        Console.WriteLine($"[{session.DeviceName}] Playback status: {status}");
                     }
                 }
             }
@@ -313,31 +426,58 @@ namespace BluetoothSpeaker
             }
         }
 
-        private bool ShouldGenerateComment()
+        private bool ShouldGenerateCommentForDevice(string deviceAddress)
         {
-            // Comment throttling and randomness
-            return DateTime.Now - _lastCommentTime > _commentThrottle && _random.Next(0, 3) == 0; // 33% chance
-        }
-
-        private async Task GenerateCommentAboutTrackAsync(string trackInfo)
-        {
-            var prompts = new[]
-            {
-                $"Generate a short, snarky, humorous comment about someone playing '{trackInfo}'. Be witty but not offensive.",
-                $"Roast this music choice in a funny way: '{trackInfo}'. Keep it clever and brief.",
-                $"Make a sarcastic comment about '{trackInfo}' being played. Be humorous but not mean-spirited.",
-                $"Write a witty, sardonic observation about someone's choice to play '{trackInfo}'."
-            };
+            if (!_deviceSessions.TryGetValue(deviceAddress, out var session))
+                return false;
             
-            var prompt = prompts[_random.Next(prompts.Length)];
-            await GenerateCommentAsync(prompt);
+            // Comment throttling and randomness per device session
+            return DateTime.Now - session.LastCommentTime > _commentThrottle && _random.Next(0, 3) == 0; // 33% chance
         }
 
-        private async Task GenerateCommentAsync(string prompt)
+        private async Task GenerateCommentAboutTrackAsync(string deviceAddress, string trackInfo)
         {
+            if (!_deviceSessions.TryGetValue(deviceAddress, out var session))
+                return;
+
+            var playCount = session.GetPlayCount(trackInfo);
+            var hasPlayedBefore = session.HasPlayedBefore(trackInfo);
+            
+            var prompts = new List<string>();
+            
+            if (playCount > 1)
+            {
+                prompts.Add($"This is the {GetOrdinal(playCount)} time you've played '{trackInfo}' this session. Make a sarcastic comment about their repetitive listening habits.");
+                prompts.Add($"They're playing '{trackInfo}' again ({playCount} times now). Roast them for being stuck on repeat.");
+            }
+            else if (hasPlayedBefore)
+            {
+                prompts.Add($"They're playing '{trackInfo}' again. Comment sarcastically about their predictable music choices.");
+            }
+            else
+            {
+                prompts.Add($"Generate a short, snarky, humorous comment about someone playing '{trackInfo}' for the first time this session. Be witty but not offensive.");
+                prompts.Add($"Make a sarcastic comment about '{trackInfo}' being played. Keep it clever and brief.");
+            }
+            
+            // Add context about session length and variety
+            if (session.PlayedTracks.Count > 10)
+            {
+                prompts.Add($"After {session.PlayedTracks.Count} songs in this session, now they're playing '{trackInfo}'. Comment on their musical journey.");
+            }
+            
+            var prompt = prompts[_random.Next(prompts.Count)];
+            await GenerateCommentForDeviceAsync(deviceAddress, prompt);
+        }
+
+        private async Task GenerateCommentForDeviceAsync(string deviceAddress, string prompt)
+        {
+            if (!_deviceSessions.TryGetValue(deviceAddress, out var session))
+                return;
+
             try
             {
-                _lastCommentTime = DateTime.Now;
+                session.LastCommentTime = DateTime.Now;
                 
                 var requestBody = new
                 {
@@ -372,7 +512,8 @@ namespace BluetoothSpeaker
                         var comment = messageContent.GetString()?.Trim();
                         if (!string.IsNullOrEmpty(comment))
                         {
-                            Console.WriteLine($"\n🎵 SPEAKER SAYS: {comment}\n");
+                            session.AddComment(comment);
+                            Console.WriteLine($"\n🎵 [{session.DeviceName}] SPEAKER SAYS: {comment}\n");
                         }
                     }
                 }
@@ -384,6 +525,31 @@ namespace BluetoothSpeaker
             catch (Exception ex)
             {
                 Console.WriteLine($"Error generating comment: {ex.Message}");
+            }
+        }
+
+        private string GetOrdinal(int number)
+        {
+            if (number <= 0) return number.ToString();
+            
+            switch (number % 100)
+            {
+                case 11:
+                case 12:
+                case 13:
+                    return number + "th";
+            }
+            
+            switch (number % 10)
+            {
+                case 1:
+                    return number + "st";
+                case 2:
+                    return number + "nd";
+                case 3:
+                    return number + "rd";
+                default:
+                    return number + "th";
             }
         }
 
