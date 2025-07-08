@@ -58,6 +58,61 @@ fix_assembly_attributes() {
     echo "✅ Assembly attributes fixed!"
 }
 
+# Function to debug media player connectivity
+debug_media_player() {
+    echo "🔍 Debugging media player connectivity..."
+    
+    # Check if D-Bus system is working
+    echo "Checking D-Bus system connection..."
+    if dbus-send --system --print-reply --dest=org.bluez /org/bluez org.freedesktop.DBus.Introspectable.Introspect > /dev/null 2>&1; then
+        echo "✅ D-Bus system connection working"
+    else
+        echo "❌ D-Bus system connection failed"
+        echo "   This will prevent media player monitoring"
+    fi
+    
+    # Check for BlueZ media players
+    echo "Checking for BlueZ media players..."
+    dbus-send --system --print-reply --dest=org.bluez /org/bluez org.freedesktop.DBus.ObjectManager.GetManagedObjects 2>/dev/null | grep -i "MediaPlayer" || echo "No MediaPlayer interfaces found"
+    
+    # Check playerctl availability
+    echo "Checking playerctl functionality..."
+    if command -v playerctl &> /dev/null; then
+        echo "✅ playerctl is installed"
+        echo "Available players:"
+        playerctl -l 2>/dev/null || echo "No media players detected by playerctl"
+        
+        echo "Current player status:"
+        playerctl status 2>/dev/null || echo "No active media player"
+        
+        echo "Metadata test:"
+        playerctl metadata 2>/dev/null || echo "No metadata available"
+    else
+        echo "❌ playerctl not found"
+    fi
+    
+    # Check for connected Bluetooth devices
+    echo "Checking connected Bluetooth devices..."
+    bluetoothctl devices Connected || echo "No connected devices found"
+    
+    # Check BlueALSA status
+    echo "Checking BlueALSA status..."
+    if systemctl is-active --quiet bluealsa; then
+        echo "✅ BlueALSA is running"
+        # Check if it's exposing media player interface
+        ps aux | grep bluealsa | grep -v grep
+    else
+        echo "❌ BlueALSA is not running"
+    fi
+    
+    # Check permissions
+    echo "Checking user permissions..."
+    groups $USER | grep -q "audio" && echo "✅ User in audio group" || echo "❌ User not in audio group"
+    groups $USER | grep -q "bluetooth" && echo "✅ User in bluetooth group" || echo "❌ User not in bluetooth group"
+    
+    echo "Debug complete. Run with: ./run-on-pi.sh --debug-media"
+}
+
 # Handle command line arguments
 if [ "$1" = "--fix-audio" ]; then
     fix_audio_routing
@@ -69,10 +124,16 @@ if [ "$1" = "--fix-assembly" ]; then
     exit 0
 fi
 
+if [ "$1" = "--debug-media" ]; then
+    debug_media_player
+    exit 0
+fi
+
 if [ "$1" = "--help" ]; then
-    echo "Usage: $0 [--fix-audio|--fix-assembly|--help]"
+    echo "Usage: $0 [--fix-audio|--fix-assembly|--debug-media|--help]"
     echo "  --fix-audio     Fix audio routing issues"
     echo "  --fix-assembly  Fix assembly attribute build errors"
+    echo "  --debug-media   Debug media player connectivity issues"
     echo "  --help          Show this help message"
     exit 0
 fi
@@ -227,8 +288,8 @@ setup_audio_routing() {
     sudo systemctl stop bluealsa-aplay 2>/dev/null || true
     sudo systemctl stop bluealsa 2>/dev/null || true
     
-    # Configure BlueALSA for A2DP sink with improved settings
-    echo "Configuring BlueALSA..."
+    # Configure BlueALSA for A2DP sink with improved settings AND media player support
+    echo "Configuring BlueALSA with media player support..."
     sudo tee /etc/systemd/system/bluealsa.service > /dev/null << 'EOF'
 [Unit]
 Description=BlueALSA service
@@ -237,11 +298,13 @@ Requires=bluetooth.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/bluealsa -p a2dp-sink -p a2dp-source --a2dp-force-mono=false --a2dp-force-audio-cd=true
+ExecStart=/usr/bin/bluealsa -p a2dp-sink -p a2dp-source --a2dp-force-mono=false --a2dp-force-audio-cd=true --enable-media-player
 Restart=on-failure
 RestartSec=3
 User=root
 Group=audio
+# Enable D-Bus access for media player interface
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 
 [Install]
 WantedBy=multi-user.target
@@ -264,6 +327,8 @@ User=root
 Group=audio
 StandardOutput=journal
 StandardError=journal
+# Enable media player monitoring
+Environment=PULSE_RUNTIME_PATH=/run/user/1000/pulse
 
 [Install]
 WantedBy=multi-user.target
@@ -324,6 +389,54 @@ EOF
         timeout 3 speaker-test -t wav -c 2 -l 1 2>/dev/null || echo "Audio test completed"
     fi
     
+    # Add media player monitoring setup
+    echo "Setting up media player monitoring..."
+    
+    # Install additional monitoring tools
+    sudo apt-get install -y dbus-x11 mpris-interface-doc
+    
+    # Configure D-Bus for media player access
+    sudo tee /etc/dbus-1/system.d/bluealsa-media.conf > /dev/null << 'EOF'
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <policy user="root">
+    <allow own="org.bluez"/>
+    <allow send_destination="org.bluez"/>
+    <allow send_interface="org.bluez.MediaPlayer1"/>
+    <allow receive_interface="org.bluez.MediaPlayer1"/>
+    <allow receive_interface="org.freedesktop.DBus.Properties"/>
+  </policy>
+  
+  <policy group="audio">
+    <allow send_destination="org.bluez"/>
+    <allow send_interface="org.bluez.MediaPlayer1"/>
+    <allow receive_interface="org.bluez.MediaPlayer1"/>
+    <allow receive_interface="org.freedesktop.DBus.Properties"/>
+  </policy>
+</busconfig>
+EOF
+
+    # Enable D-Bus service for user session
+    sudo tee /etc/systemd/system/dbus-user.service > /dev/null << 'EOF'
+[Unit]
+Description=D-Bus User Message Bus
+Documentation=man:dbus-daemon(1)
+After=systemd-user-sessions.service
+
+[Service]
+ExecStart=/usr/bin/dbus-daemon --user --systemd-activation --address=unix:path=/run/user/%u/bus --nofork --nopidfile --systemd-activation
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+EOF
+
+    # Enable and start D-Bus user service
+    sudo systemctl daemon-reload
+    sudo systemctl enable dbus-user.service
+    sudo systemctl start dbus-user.service
+
     echo "✅ Audio routing setup complete!"
 }
 
@@ -449,8 +562,19 @@ setup_autostart() {
     
     # Get current user and paths
     USER_NAME=$(whoami)
+    USER_ID=$(id -u $USER_NAME)
     APP_PATH=$(pwd)
     DOTNET_PATH=$(which dotnet)
+    
+    # Ensure .NET is properly installed for the user
+    if [ -z "$DOTNET_PATH" ]; then
+        echo "Installing .NET 8 for current user..."
+        wget https://dot.net/v1/dotnet-install.sh -O /tmp/dotnet-install.sh
+        chmod +x /tmp/dotnet-install.sh
+        /tmp/dotnet-install.sh --channel 8.0 --install-dir /home/$USER_NAME/.dotnet
+        DOTNET_PATH="/home/$USER_NAME/.dotnet/dotnet"
+        rm /tmp/dotnet-install.sh
+    fi
     
     # Check if .env file exists, create if not
     if [ ! -f ".env" ]; then
@@ -470,25 +594,83 @@ EOF
     echo "Building application in release mode..."
     dotnet build -c Release
     
-    # Create systemd service
+    # Ensure proper permissions
+    sudo chown -R $USER_NAME:$USER_NAME $APP_PATH
+    sudo chmod +x $APP_PATH/*.sh
+    
+    # Create systemd service with proper environment and permissions
     sudo tee /etc/systemd/system/meanspeaker.service > /dev/null << EOF
 [Unit]
 Description=MeanSpeaker - Snarky Bluetooth Speaker with AI Commentary
-After=network.target bluetooth.target bluealsa.service bluealsa-aplay.service sound.target
-Wants=bluetooth.target
-Requires=network.target bluealsa.service bluealsa-aplay.service
+After=network-online.target bluetooth.target bluealsa.service bluealsa-aplay.service sound.target multi-user.target
+Wants=network-online.target bluetooth.target
+Requires=bluealsa.service bluealsa-aplay.service
 
 [Service]
 Type=simple
 User=$USER_NAME
-Group=$USER_NAME
+Group=audio
+SupplementaryGroups=bluetooth audio dialout
 WorkingDirectory=$APP_PATH
+Environment=HOME=/home/$USER_NAME
+Environment=USER=$USER_NAME
 Environment=DOTNET_ROOT=/home/$USER_NAME/.dotnet
-Environment=PATH=/home/$USER_NAME/.dotnet:\$PATH
-EnvironmentFile=$APP_PATH/.env
-ExecStart=$DOTNET_PATH run --configuration Release
+Environment=PATH=/home/$USER_NAME/.dotnet:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$USER_ID/bus
+EnvironmentFile=-$APP_PATH/.env
+ExecStartPre=/bin/sleep 10
+ExecStart=$DOTNET_PATH run --configuration Release --project $APP_PATH/BluetoothSpeaker.csproj
 Restart=always
-RestartSec=10
+RestartSec=15
+TimeoutStartSec=60
+StandardOutput=journal
+StandardError=journal
+KillMode=mixed
+KillSignal=SIGTERM
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=false
+ProtectSystem=strict
+ReadWritePaths=$APP_PATH /tmp /var/tmp
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    # Create a startup delay script to ensure all services are ready
+    sudo tee /usr/local/bin/meanspeaker-start.sh > /dev/null << EOF
+#!/bin/bash
+# Wait for all dependencies to be ready
+sleep 15
+
+# Ensure bluetooth is discoverable
+bluetoothctl discoverable on
+bluetoothctl pairable on
+
+# Start the main application
+cd $APP_PATH
+su $USER_NAME -c "$DOTNET_PATH run --configuration Release"
+EOF
+    
+    sudo chmod +x /usr/local/bin/meanspeaker-start.sh
+    
+    # Create alternative service using the startup script
+    sudo tee /etc/systemd/system/meanspeaker-alt.service > /dev/null << EOF
+[Unit]
+Description=MeanSpeaker Alternative Start
+After=network-online.target bluetooth.target bluealsa.service bluealsa-aplay.service
+Wants=network-online.target
+Requires=bluealsa.service bluealsa-aplay.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/meanspeaker-start.sh
+Restart=always
+RestartSec=30
 StandardOutput=journal
 StandardError=journal
 
@@ -499,11 +681,39 @@ EOF
     # Enable and start service
     sudo systemctl daemon-reload
     sudo systemctl enable meanspeaker.service
-    sudo systemctl start meanspeaker.service
     
-    echo "✅ Auto-start service created and started!"
-    echo "Use 'sudo systemctl status meanspeaker' to check status"
-    echo "Use 'sudo journalctl -u meanspeaker -f' to view logs"
+    # Test the service
+    echo "Testing service startup..."
+    sudo systemctl start meanspeaker.service
+    sleep 5
+    
+    if systemctl is-active --quiet meanspeaker.service; then
+        echo "✅ Auto-start service created and started successfully!"
+    else
+        echo "⚠️  Primary service failed to start, trying alternative..."
+        sudo systemctl stop meanspeaker.service
+        sudo systemctl disable meanspeaker.service
+        sudo systemctl enable meanspeaker-alt.service
+        sudo systemctl start meanspeaker-alt.service
+        sleep 5
+        
+        if systemctl is-active --quiet meanspeaker-alt.service; then
+            echo "✅ Alternative auto-start service working!"
+        else
+            echo "❌ Both services failed. Check logs with:"
+            echo "   sudo journalctl -u meanspeaker -f"
+            echo "   sudo journalctl -u meanspeaker-alt -f"
+        fi
+    fi
+    
+    echo ""
+    echo "Auto-start service commands:"
+    echo "  - Check status: sudo systemctl status meanspeaker"
+    echo "  - View logs: sudo journalctl -u meanspeaker -f"
+    echo "  - Stop service: sudo systemctl stop meanspeaker"
+    echo "  - Start service: sudo systemctl start meanspeaker"
+    echo "  - Restart service: sudo systemctl restart meanspeaker"
+    echo "  - Check alternative: sudo systemctl status meanspeaker-alt"
 }
 
 # Check if this is the first run
@@ -636,17 +846,27 @@ echo ""
 echo "🔧 Troubleshooting Commands:"
 echo "  - Fix audio routing: ./run-on-pi.sh --fix-audio"
 echo "  - Fix build issues: ./run-on-pi.sh --fix-assembly"
+echo "  - Debug media player: ./run-on-pi.sh --debug-media"
 echo "  - Check all services: systemctl status bluealsa bluealsa-aplay bluetooth bt-agent"
 echo "  - Restart services: sudo systemctl restart bluetooth bluealsa bluealsa-aplay"
 echo "  - Check audio devices: aplay -l"
 echo "  - Test audio: speaker-test -t wav -c 2"
 echo "  - Check logs: journalctl -u bluealsa-aplay -f"
 echo ""
+echo "🤖 AI Commentary Troubleshooting:"
+echo "  If audio works but no AI commentary:"
+echo "  1. Run: ./run-on-pi.sh --debug-media"
+echo "  2. Check D-Bus permissions: sudo systemctl restart dbus"
+echo "  3. Verify OpenAI API key in .env file"
+echo "  4. Check app logs: journalctl -u meanspeaker -f"
+echo "  5. Test playerctl: playerctl -l && playerctl status"
+echo ""
 echo "📱 To connect your device:"
 echo "  1. Make sure Bluetooth is on"
 echo "  2. Look for 'The Little Shit' in your Bluetooth devices"
 echo "  3. Connect and start playing music"
-echo "  4. Enjoy the snarky commentary!"
+echo "  4. Wait 10-15 seconds for AI commentary to start"
+echo "  5. If no commentary, check troubleshooting steps above"
 echo ""
 if [ -f "/etc/systemd/system/meanspeaker.service" ]; then
     echo "🚀 Auto-start service commands:"
