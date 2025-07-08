@@ -259,16 +259,7 @@ namespace BluetoothSpeaker
 
         private async Task GenerateGenericMusicCommentAsync()
         {
-            var prompts = new[]
-            {
-                "Oh, someone started playing music. Let me guess - it's either terrible pop music or something I've never heard of?",
-                "Music detected! I can't see what it is, but knowing your taste, I'm already preparing my sarcasm.",
-                "Audio is playing... and somehow I just know it's going to be questionable.",
-                "Well, well, someone pressed play. Time to judge whatever sonic experience you've chosen.",
-                "Music started! I'd tell you what I think about the song, but your device is being mysterious about it."
-            };
-            
-            var prompt = prompts[_random.Next(prompts.Length)];
+            var prompt = "I detect that music started playing but I can't identify the specific track. Make a snarky comment about being unable to see what's playing but knowing it's probably questionable.";
             await GenerateAndSpeakCommentAsync(prompt);
         }
 
@@ -659,30 +650,13 @@ namespace BluetoothSpeaker
 
         private async Task GenerateWelcomeCommentAsync(string deviceName)
         {
-            var prompts = new[]
-            {
-                $"Oh great, {deviceName} just connected. Let me guess, you're about to blast some questionable music choices through me?",
-                $"Well well, {deviceName} has arrived. Time to judge your terrible taste in music.",
-                $"{deviceName} connected. I'm ready to roast whatever audio nightmare you're about to subject me to.",
-                $"Oh look, {deviceName} wants to use me. Hope you have better music taste than my last victim."
-            };
-            
-            var prompt = prompts[_random.Next(prompts.Length)];
+            var prompt = $"A device called '{deviceName}' just connected to me. Welcome them with my signature snark about their upcoming music choices.";
             await GenerateAndSpeakCommentAsync(prompt);
         }
 
         private async Task GenerateTrackCommentAsync(string trackInfo)
         {
-            var prompts = new[]
-            {
-                $"Really? '{trackInfo}'? That's what passes for music these days?",
-                $"Oh wonderful, '{trackInfo}'. Let me guess, this is your 'favorite song'?",
-                $"'{trackInfo}' - because nothing says 'good taste' like... actually, no, this doesn't say that at all.",
-                $"Playing '{trackInfo}'. Well, I've heard worse... wait, no, I haven't.",
-                $"'{trackInfo}' coming right up. Hope your neighbors appreciate your... unique... musical choices."
-            };
-            
-            var prompt = prompts[_random.Next(prompts.Length)];
+            var prompt = $"I'm now playing '{trackInfo}'. Make a snarky comment about this music choice.";
             await GenerateAndSpeakCommentAsync(prompt);
         }
 
@@ -691,6 +665,10 @@ namespace BluetoothSpeaker
             try
             {
                 _lastCommentTime = DateTime.Now;
+                
+                // Get the most current information at the time of comment generation
+                var currentContext = await GetCurrentSystemContextAsync();
+                var enhancedPrompt = $"{prompt}\n\nCurrent system state: {currentContext}";
                 
                 // Skip AI if we don't have a real API key
                 if (_openAiApiKey == "dummy-key")
@@ -719,8 +697,8 @@ namespace BluetoothSpeaker
                     model = "gpt-3.5-turbo",
                     messages = new[]
                     {
-                        new { role = "system", content = "You are a snarky Bluetooth speaker that makes witty comments about music. Keep responses under 25 words and be clever but not offensive." },
-                        new { role = "user", content = prompt }
+                        new { role = "system", content = "You are a snarky Bluetooth speaker that makes witty comments about music. You have real-time awareness of what's currently playing. Use the current system state information to make accurate, contextual comments. Keep responses under 25 words and be clever but not offensive. Always reference the actual current track/artist/situation when possible." },
+                        new { role = "user", content = enhancedPrompt }
                     },
                     max_tokens = 100,
                     temperature = 0.9
@@ -1105,7 +1083,7 @@ namespace BluetoothSpeaker
             Console.WriteLine($"📱 Connected device: {_connectedDeviceName}");
             Console.WriteLine($"🎵 Current track: {_currentTrack ?? "None"}");
             
-            // Force a test comment
+            // Force a test comment with real-time context
             _lastCommentTime = DateTime.MinValue;
             await GenerateAndSpeakCommentAsync("Generate a snarky comment about someone testing their Bluetooth speaker's AI commentary system.");
         }
@@ -1290,6 +1268,61 @@ namespace BluetoothSpeaker
         {
             Console.WriteLine("=== COMPREHENSIVE TRACK DETECTION DEBUG ===");
             
+            // First check enhanced metadata services
+            Console.WriteLine("\n🔍 Enhanced Metadata Services...");
+            bool hasWorkingEnhancedService = false;
+            
+            if (_bluetoothMetadataService != null)
+            {
+                Console.WriteLine("   ✅ D-Bus Service: Active");
+                var connectedDevices = _bluetoothMetadataService.GetConnectedDevices().ToList();
+                Console.WriteLine($"   📱 D-Bus connected devices: {connectedDevices.Count}");
+                
+                foreach (var device in connectedDevices)
+                {
+                    var currentTrack = _bluetoothMetadataService.GetCurrentTrack(device);
+                    var currentState = _bluetoothMetadataService.GetCurrentState(device);
+                    Console.WriteLine($"     📍 {device}: {(currentTrack?.IsValid == true ? currentTrack.FormattedString : "No track")} ({currentState})");
+                    
+                    if (currentTrack?.IsValid == true)
+                    {
+                        hasWorkingEnhancedService = true;
+                    }
+                }
+                
+                // Try to get any current track
+                var anyTrack = _bluetoothMetadataService.GetAnyCurrentTrack();
+                if (anyTrack?.IsValid == true)
+                {
+                    Console.WriteLine($"   🎵 D-Bus active track: '{anyTrack.FormattedString}'");
+                    Console.WriteLine($"   📄 Track details: {anyTrack.DetailedString}");
+                    hasWorkingEnhancedService = true;
+                }
+                else
+                {
+                    Console.WriteLine("   ❌ D-Bus service has no active tracks");
+                }
+            }
+            else
+            {
+                Console.WriteLine("   ❌ D-Bus Service: Disabled");
+            }
+            
+            if (_fallbackMetadataService != null)
+            {
+                Console.WriteLine("   ✅ Fallback Service: Active (event-driven polling)");
+            }
+            else
+            {
+                Console.WriteLine("   ❌ Fallback Service: Disabled");
+            }
+            
+            if (hasWorkingEnhancedService)
+            {
+                Console.WriteLine("   ✨ FINDING: Enhanced services are working and providing track data!");
+                Console.WriteLine("   💡 This explains why you have current track info despite legacy methods failing.");
+            }
+            
             Console.WriteLine("\n1. Testing MPRIS D-Bus interface...");
             var mprisResult = await GetMPRISMetadataAsync();
             Console.WriteLine($"   MPRIS result: '{mprisResult}'");
@@ -1310,7 +1343,11 @@ namespace BluetoothSpeaker
             var blualsaResult = await GetBlueALSAMetadataAsync();
             Console.WriteLine($"   BlueALSA result: '{blualsaResult}'");
             
-            Console.WriteLine("\n6. Raw command tests...");
+            Console.WriteLine("\n6. Testing enhanced audio routing check...");
+            var audioIsPlaying = await IsAudioCurrentlyPlayingAsync();
+            Console.WriteLine($"   Audio currently playing: {audioIsPlaying}");
+            
+            Console.WriteLine("\n7. Raw command tests...");
             
             // Test D-Bus list names
             var dbusNames = await RunCommandWithOutputAsync("dbus-send", "--session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.ListNames");
@@ -1336,27 +1373,119 @@ namespace BluetoothSpeaker
             // Test running processes
             var processes = await RunCommandWithOutputAsync("ps", "aux | grep bluealsa-aplay | grep -v grep");
             Console.WriteLine($"   Active bluealsa-aplay processes: {(!string.IsNullOrEmpty(processes) ? "Yes" : "No")}");
+            if (!string.IsNullOrEmpty(processes))
+            {
+                Console.WriteLine($"   Process details: {processes.Substring(0, Math.Min(150, processes.Length))}...");
+            }
             
             // Test PulseAudio
             var pactl = await RunCommandWithOutputAsync("pactl", "list sink-inputs");
             Console.WriteLine($"   PulseAudio sink inputs: {(!string.IsNullOrEmpty(pactl) ? "Yes" : "No")}");
+            
+            // Test bluetoothctl player info
+            if (!string.IsNullOrEmpty(_connectedDeviceAddress) && _connectedDeviceAddress != "detected")
+            {
+                var playerInfo = await RunCommandWithOutputAsync("bluetoothctl", $"player {_connectedDeviceAddress}");
+                Console.WriteLine($"   Bluetoothctl player info: {(!string.IsNullOrEmpty(playerInfo) ? "Yes" : "No")}");
+                if (!string.IsNullOrEmpty(playerInfo))
+                {
+                    var trackInfo = ParseBluetoothctlTrackInfo(playerInfo);
+                    if (!string.IsNullOrEmpty(trackInfo))
+                    {
+                        Console.WriteLine($"   Bluetoothctl track: '{trackInfo}'");
+                    }
+                }
+            }
             
             Console.WriteLine("\n=== Current State ===");
             Console.WriteLine($"Connected Device: {_connectedDeviceName ?? "None"}");
             Console.WriteLine($"Device Address: {_connectedDeviceAddress ?? "None"}");
             Console.WriteLine($"Current Track: {_currentTrack ?? "None"}");
             
+            if (_currentTrackMetadata?.IsValid == true)
+            {
+                Console.WriteLine($"Track Metadata:");
+                Console.WriteLine($"  Artist: {_currentTrackMetadata.Artist}");
+                Console.WriteLine($"  Title: {_currentTrackMetadata.Title}");
+                Console.WriteLine($"  Album: {_currentTrackMetadata.Album}");
+                if (!string.IsNullOrEmpty(_currentTrackMetadata.Genre))
+                    Console.WriteLine($"  Genre: {_currentTrackMetadata.Genre}");
+                if (_currentTrackMetadata.Duration > 0)
+                    Console.WriteLine($"  Duration: {TimeSpan.FromMicroseconds(_currentTrackMetadata.Duration):mm\\:ss}");
+            }
+            
+            Console.WriteLine($"Mode: {(_usingFallbackOnly ? "Fallback Only" : "D-Bus + Fallback")}");
+            Console.WriteLine($"Audio routing active: {_audioRoutingActive}");
+            Console.WriteLine($"Last audio routing: {_lastAudioRoutingSetup:HH:mm:ss}");
+            
             Console.WriteLine("\n=== RECOMMENDATION ===");
-            if (!string.IsNullOrEmpty(mprisResult))
-                Console.WriteLine("✅ MPRIS interface working - should get track info");
+            // Enhanced recommendations based on what's working
+            if (hasWorkingEnhancedService)
+            {
+                Console.WriteLine("✅ SYSTEM IS WORKING CORRECTLY!");
+                Console.WriteLine("📊 The enhanced D-Bus metadata service is providing real-time track information.");
+                Console.WriteLine("💡 Legacy debug methods show empty because they use different detection approaches.");
+                Console.WriteLine("🎯 Your system is using the modern, event-driven metadata detection successfully.");
+                
+                if (string.IsNullOrEmpty(mprisResult) && string.IsNullOrEmpty(bluezResult))
+                {
+                    Console.WriteLine("📝 Legacy methods fail because:");
+                    Console.WriteLine("   - Phone may not expose MPRIS interface");
+                    Console.WriteLine("   - BlueZ MediaPlayer interface varies by device");
+                    Console.WriteLine("   - Enhanced service uses direct D-Bus monitoring instead");
+                }
+            }
+            else if (!string.IsNullOrEmpty(_currentTrack) && _currentTrack != "None")
+            {
+                Console.WriteLine("✅ System has track information from some source");
+                Console.WriteLine("💡 Check if fallback service or event-based detection is working");
+            }
+            else if (!string.IsNullOrEmpty(mprisResult))
+            {
+                Console.WriteLine("✅ MPRIS detection works - consider enabling MPRIS player on phone");
+            }
             else if (!string.IsNullOrEmpty(bluezResult))
-                Console.WriteLine("✅ BlueZ MediaPlayer working - should get track info");
+            {
+                Console.WriteLine("✅ BlueZ MediaPlayer works - good for track metadata");
+            }
             else if (!string.IsNullOrEmpty(playerctlResult))
-                Console.WriteLine("✅ PlayerCtl working - should get track info");
+            {
+                Console.WriteLine("✅ PlayerCtl works - install media player daemon");
+            }
             else if (!string.IsNullOrEmpty(audioActivity))
-                Console.WriteLine("⚠️ Audio detected but no metadata - will comment on audio activity");
+            {
+                Console.WriteLine("✅ Audio activity detected - metadata may be limited");
+            }
+            else if (!string.IsNullOrEmpty(blualsaResult))
+            {
+                Console.WriteLine("✅ BlueALSA metadata available");
+            }
+            else if (audioIsPlaying)
+            {
+                Console.WriteLine("✅ Audio is playing but no metadata available");
+                Console.WriteLine("💡 Try starting bluealsa-aplay manually: sudo systemctl start bluealsa-aplay");
+            }
+            else if (!string.IsNullOrEmpty(blualsaList) && string.IsNullOrEmpty(processes))
+            {
+                Console.WriteLine("⚠️ BlueALSA device available but no active processes");
+                Console.WriteLine("💡 Try starting audio routing: sudo systemctl restart bluealsa-aplay");
+                Console.WriteLine("💡 Or run manually: bluealsa-aplay --pcm-buffer-time=250000 " + _connectedDeviceAddress);
+            }
             else
+            {
                 Console.WriteLine("❌ No track detection methods working - try playing music and run debug again");
+                Console.WriteLine("💡 Make sure music is actually playing on your device");
+                Console.WriteLine("💡 Try restarting Bluetooth services: sudo systemctl restart bluetooth bluealsa");
+            }
+            
+            Console.WriteLine("\n=== AUDIO ROUTING SUGGESTIONS ===");
+            if (!audioIsPlaying && !string.IsNullOrEmpty(_connectedDeviceAddress))
+            {
+                Console.WriteLine("💡 Device connected but no audio detected. Try:");
+                Console.WriteLine($"   bluealsa-aplay --pcm-buffer-time=250000 {_connectedDeviceAddress}");
+                Console.WriteLine("   sudo systemctl restart bluealsa-aplay");
+                Console.WriteLine("   sudo systemctl restart bluealsa");
+            }
             
             Console.WriteLine("\n=== END DEBUG ===");
         }
@@ -1683,6 +1812,7 @@ namespace BluetoothSpeaker
                     // ALWAYS generate comment for track changes (respecting throttling)
                     if (ShouldGenerateComment())
                     {
+                        // Generate context-aware comment with current real-time information
                         await GenerateEnhancedTrackCommentAsync(e.CurrentTrack, e.PreviousTrack);
                     }
                     else
@@ -1787,40 +1917,21 @@ namespace BluetoothSpeaker
         {
             try
             {
-                var trackInfo = currentTrack.DetailedString;
+                string prompt;
                 
                 if (previousTrack?.IsValid == true)
                 {
-                    var prompts = new[]
-                    {
-                        $"Switching from '{previousTrack.FormattedString}' to '{trackInfo}'? Interesting musical journey you're on.",
-                        $"Oh, done with '{previousTrack.FormattedString}' already? Now it's '{trackInfo}'. Your attention span is... something.",
-                        $"From '{previousTrack.FormattedString}' to '{trackInfo}' - that's quite the genre hop. Are you having an identity crisis?",
-                        $"'{previousTrack.FormattedString}' to '{trackInfo}' - someone's exploring the full spectrum of questionable taste.",
-                        $"Abandoning '{previousTrack.FormattedString}' for '{trackInfo}'? Bold choice. Not good, but bold."
-                    };
-                    
-                    var prompt = prompts[_random.Next(prompts.Length)];
-                    await GenerateAndSpeakCommentAsync(prompt);
+                    // Track change scenario - be contextually aware of the transition
+                    prompt = $"I just detected a track change from '{previousTrack.FormattedString}' to '{currentTrack.FormattedString}'. Comment on this musical transition with my signature snark.";
                 }
                 else
                 {
-                    // Enhanced single track comments with more metadata
-                    var prompts = new[]
-                    {
-                        $"Really? '{trackInfo}'? That's what passes for music these days?",
-                        $"Oh wonderful, '{trackInfo}'. Let me guess, this is your 'favorite song'?",
-                        $"'{trackInfo}' - because nothing says 'good taste' like... actually, no, this doesn't say that at all.",
-                        $"Playing '{trackInfo}'. Well, I've heard worse... wait, no, I haven't.",
-                        $"'{trackInfo}' coming right up. Hope your neighbors appreciate your... unique... musical choices.",
-                        currentTrack.Album != "Unknown Album" && !string.IsNullOrEmpty(currentTrack.Album) ?
-                            $"'{trackInfo}' from the album '{currentTrack.Album}'. Someone actually decided to record a whole album of this?" :
-                            $"'{trackInfo}' - no album info, probably for the best. Less evidence of poor decisions."
-                    };
-                    
-                    var prompt = prompts[_random.Next(prompts.Length)];
-                    await GenerateAndSpeakCommentAsync(prompt);
+                    // New track scenario - comment on the current track with full context awareness
+                    prompt = $"I'm now playing '{currentTrack.FormattedString}'. Make a snarky comment about this music choice.";
                 }
+                
+                // The GenerateAndSpeakCommentAsync method will automatically add current system context
+                await GenerateAndSpeakCommentAsync(prompt);
             }
             catch (Exception ex)
             {
@@ -1830,35 +1941,286 @@ namespace BluetoothSpeaker
 
         private async Task GeneratePlaybackCommentAsync(string action)
         {
+            var prompt = action.ToLowerInvariant() switch
+            {
+                "paused" => "The music just paused. Make a snarky comment about getting a break from the music.",
+                "stopped" => "The music stopped completely. Comment sarcastically about the sudden peace and quiet.",
+                _ => "Something happened with the music playback. Make a general snarky observation."
+            };
+            
+            await GenerateAndSpeakCommentAsync(prompt);
+        }
+
+        public async Task ForceSyncTrackDetectionAsync()
+        {
+            Console.WriteLine("🔄 Force syncing track detection...");
+            
             try
             {
-                var prompts = action.ToLowerInvariant() switch
-                {
-                    "paused" => new[]
-                    {
-                        "Paused? Thank goodness, my circuits needed a break from that assault on music.",
-                        "Finally, some silence. Was starting to think you'd never give my speakers a rest.",
-                        "Paused the music? Smart move. Even I need time to recover from that experience.",
-                        "Oh good, you paused it. I was beginning to question your life choices... well, more than usual."
-                    },
-                    "stopped" => new[]
-                    {
-                        "Stopped the music? Probably for the best. My speakers will thank you.",
-                        "Music stopped. Finally, some peace and quiet to contemplate better life choices.",
-                        "Well, that's over. Now I can pretend that never happened."
-                    },
-                    _ => new[]
-                    {
-                        "Something happened with the music. Not sure what, but I'm ready to judge it."
-                    }
-                };
+                string detectedTrack = "";
+                TrackMetadata? detectedMetadata = null;
+                string source = "";
                 
-                var prompt = prompts[_random.Next(prompts.Length)];
-                await GenerateAndSpeakCommentAsync(prompt);
+                // Priority 1: Enhanced D-Bus metadata service
+                if (_bluetoothMetadataService != null)
+                {
+                    var anyTrack = _bluetoothMetadataService.GetAnyCurrentTrack();
+                    if (anyTrack?.IsValid == true)
+                    {
+                        detectedTrack = anyTrack.FormattedString;
+                        detectedMetadata = anyTrack;
+                        source = "D-Bus Enhanced Service";
+                        Console.WriteLine($"✅ Found track via {source}: {anyTrack.DetailedString}");
+                    }
+                }
+                
+                // Priority 2: Traditional detection methods
+                if (string.IsNullOrEmpty(detectedTrack))
+                {
+                    // Test each method individually
+                    var mprisResult = await GetMPRISMetadataAsync();
+                    if (!string.IsNullOrEmpty(mprisResult))
+                    {
+                        detectedTrack = mprisResult;
+                        source = "MPRIS D-Bus";
+                        Console.WriteLine($"✅ Found track via {source}: {mprisResult}");
+                    }
+                    else
+                    {
+                        var bluezResult = await GetBlueZMediaPlayerMetadataAsync();
+                        if (!string.IsNullOrEmpty(bluezResult))
+                        {
+                            detectedTrack = bluezResult;
+                            source = "BlueZ MediaPlayer";
+                            Console.WriteLine($"✅ Found track via {source}: {bluezResult}");
+                        }
+                        else
+                        {
+                            var playerctlResult = await GetPlayerCtlMetadataAsync();
+                            if (!string.IsNullOrEmpty(playerctlResult))
+                            {
+                                detectedTrack = playerctlResult;
+                                source = "PlayerCtl";
+                                Console.WriteLine($"✅ Found track via {source}: {playerctlResult}");
+                            }
+                            else
+                            {
+                                var blualsaResult = await GetBlueALSAMetadataAsync();
+                                if (!string.IsNullOrEmpty(blualsaResult))
+                                {
+                                    detectedTrack = blualsaResult;
+                                    source = "BlueALSA";
+                                    Console.WriteLine($"✅ Found track via {source}: {blualsaResult}");
+                                }
+                                else
+                                {
+                                    var audioActivity = await DetectAudioActivityAsync();
+                                    if (!string.IsNullOrEmpty(audioActivity))
+                                    {
+                                        detectedTrack = audioActivity;
+                                        source = "Audio Activity";
+                                        Console.WriteLine($"✅ Found track via {source}: {audioActivity}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Priority 3: Enhanced audio routing and bluealsa-aplay startup
+                if (string.IsNullOrEmpty(detectedTrack) && !string.IsNullOrEmpty(_connectedDeviceAddress))
+                {
+                    Console.WriteLine("🔧 No track detected, trying to start audio routing...");
+                    await EnsureAudioRoutingAsync();
+                    
+                    // Wait a moment for audio to start
+                    await Task.Delay(3000);
+                    
+                    // Try audio activity detection again
+                    var audioActivity = await DetectAudioActivityAsync();
+                    if (!string.IsNullOrEmpty(audioActivity))
+                    {
+                        detectedTrack = audioActivity;
+                        source = "Audio Activity (after routing)";
+                        Console.WriteLine($"✅ Audio detected after routing setup: {audioActivity}");
+                    }
+                }
+                
+                // Update current state if we found something
+                if (!string.IsNullOrEmpty(detectedTrack) && detectedTrack != _currentTrack)
+                {
+                    var previousTrack = _currentTrack;
+                    _currentTrack = detectedTrack;
+                    _currentTrackMetadata = detectedMetadata;
+                    
+                    Console.WriteLine($"🎵 Track updated: '{previousTrack}' -> '{detectedTrack}' (via {source})");
+                    
+                    // Generate comment if this is a real track change
+                    if (!string.IsNullOrEmpty(previousTrack) && 
+                        previousTrack != "None" && 
+                        !previousTrack.Contains("No track") &&
+                        ShouldGenerateComment())
+                    {
+                        if (detectedMetadata?.IsValid == true)
+                        {
+                            await GenerateEnhancedTrackCommentAsync(detectedMetadata);
+                        }
+                        else
+                        {
+                            await GenerateTrackCommentAsync(detectedTrack);
+                        }
+                    }
+                }
+                else if (string.IsNullOrEmpty(detectedTrack))
+                {
+                    Console.WriteLine("❌ No track detected through any method");
+                    Console.WriteLine("💡 Try playing music and running force sync again");
+                }
+                else
+                {
+                    Console.WriteLine($"✅ Track detection up to date: {detectedTrack}");
+                }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ Error generating playback comment: {ex.Message}");
+                Console.WriteLine($"❌ Error during force sync: {ex.Message}");
+            }
+        }
+
+        private async Task<string> GetCurrentSystemContextAsync()
+        {
+            try
+            {
+                var context = new List<string>();
+                
+                // Get the most current track information
+                string currentTrack = "";
+                TrackMetadata? currentMetadata = null;
+                string source = "";
+                
+                // Priority 1: Enhanced D-Bus metadata service (most accurate)
+                if (_bluetoothMetadataService != null)
+                {
+                    var anyTrack = _bluetoothMetadataService.GetAnyCurrentTrack();
+                    if (anyTrack?.IsValid == true)
+                    {
+                        currentTrack = anyTrack.FormattedString;
+                        currentMetadata = anyTrack;
+                        source = "D-Bus";
+                    }
+                }
+                
+                // Priority 2: Use cached current track if enhanced service isn't available
+                if (string.IsNullOrEmpty(currentTrack) && !string.IsNullOrEmpty(_currentTrack))
+                {
+                    currentTrack = _currentTrack;
+                    currentMetadata = _currentTrackMetadata;
+                    source = "Cached";
+                }
+                
+                // Priority 3: Try to detect current track in real-time
+                if (string.IsNullOrEmpty(currentTrack))
+                {
+                    var detectedTrack = await DetectCurrentTrackRealTimeAsync();
+                    if (!string.IsNullOrEmpty(detectedTrack))
+                    {
+                        currentTrack = detectedTrack;
+                        source = "Real-time detection";
+                    }
+                }
+                
+                // Build context string
+                if (!string.IsNullOrEmpty(currentTrack))
+                {
+                    context.Add($"Currently playing: {currentTrack}");
+                    
+                    if (currentMetadata?.IsValid == true)
+                    {
+                        if (!string.IsNullOrEmpty(currentMetadata.Artist) && currentMetadata.Artist != "Unknown Artist")
+                            context.Add($"Artist: {currentMetadata.Artist}");
+                        if (!string.IsNullOrEmpty(currentMetadata.Album) && currentMetadata.Album != "Unknown Album")
+                            context.Add($"Album: {currentMetadata.Album}");
+                        if (!string.IsNullOrEmpty(currentMetadata.Genre))
+                            context.Add($"Genre: {currentMetadata.Genre}");
+                        if (currentMetadata.Duration > 0)
+                        {
+                            var duration = TimeSpan.FromMicroseconds(currentMetadata.Duration);
+                            context.Add($"Duration: {duration:mm\\:ss}");
+                        }
+                    }
+                    
+                    context.Add($"Source: {source}");
+                }
+                else
+                {
+                    context.Add("No track currently detected");
+                }
+                
+                // Add device information
+                if (!string.IsNullOrEmpty(_connectedDeviceName))
+                {
+                    context.Add($"Connected device: {_connectedDeviceName}");
+                }
+                
+                // Add playback state if available
+                if (_bluetoothMetadataService != null && !string.IsNullOrEmpty(_connectedDeviceAddress))
+                {
+                    var state = _bluetoothMetadataService.GetCurrentState(_connectedDeviceAddress);
+                    if (state != PlaybackState.Unknown)
+                    {
+                        context.Add($"Playback state: {state}");
+                    }
+                }
+                
+                // Add audio activity status
+                var audioPlaying = await IsAudioCurrentlyPlayingAsync();
+                context.Add($"Audio playing: {audioPlaying}");
+                
+                return string.Join(", ", context);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error getting current context: {ex.Message}");
+                return "Context unavailable";
+            }
+        }
+
+        private async Task<string> DetectCurrentTrackRealTimeAsync()
+        {
+            try
+            {
+                // Try multiple detection methods in priority order
+                var methods = new[]
+                {
+                    GetMPRISMetadataAsync,
+                    GetBlueZMediaPlayerMetadataAsync,
+                    GetPlayerCtlMetadataAsync,
+                    GetBlueALSAMetadataAsync,
+                    DetectAudioActivityAsync
+                };
+                
+                foreach (var method in methods)
+                {
+                    try
+                    {
+                        var result = await method();
+                        if (!string.IsNullOrEmpty(result))
+                        {
+                            return result;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"⚠️ Detection method failed: {ex.Message}");
+                    }
+                }
+                
+                return "";
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error in real-time detection: {ex.Message}");
+                return "";
             }
         }
     }
