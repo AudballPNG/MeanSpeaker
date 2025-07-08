@@ -30,6 +30,11 @@ namespace BluetoothSpeaker
         private CancellationTokenSource? _monitoringCancellation;
         private bool _disposed = false;
 
+        // Add periodic audio detection and commentary
+        private DateTime _lastAudioCheck = DateTime.MinValue;
+        private readonly TimeSpan _audioCheckInterval = TimeSpan.FromSeconds(10);
+        private bool _wasPlayingAudio = false;
+
         public MusicMonitor(string openAiApiKey, bool enableSpeech = true, string ttsVoice = "en+f3")
         {
             _openAiApiKey = openAiApiKey ?? throw new ArgumentNullException(nameof(openAiApiKey));
@@ -84,6 +89,9 @@ namespace BluetoothSpeaker
                     if (!string.IsNullOrEmpty(_connectedDeviceAddress))
                     {
                         await CheckCurrentTrackAsync();
+                        
+                        // Also check for generic audio activity (fallback)
+                        await CheckForAudioChangesAsync();
                     }
                     
                     // Simple 2-second polling like your working system
@@ -99,6 +107,109 @@ namespace BluetoothSpeaker
                     await Task.Delay(5000, cancellationToken);
                 }
             }
+        }
+
+        private async Task CheckForAudioChangesAsync()
+        {
+            try
+            {
+                var now = DateTime.Now;
+                if (now - _lastAudioCheck < _audioCheckInterval)
+                    return;
+                
+                _lastAudioCheck = now;
+                
+                // Simple approach: detect when audio starts/stops and comment
+                var isPlayingAudio = await IsAudioCurrentlyPlayingAsync();
+                
+                if (isPlayingAudio != _wasPlayingAudio)
+                {
+                    _wasPlayingAudio = isPlayingAudio;
+                    
+                    if (isPlayingAudio)
+                    {
+                        // Audio just started
+                        var genericTrackInfo = "Unknown Track";
+                        if (_currentTrack != genericTrackInfo)
+                        {
+                            Console.WriteLine($"🎵 Audio playback detected from {_connectedDeviceName}");
+                            _currentTrack = genericTrackInfo;
+                            
+                            if (ShouldGenerateComment())
+                            {
+                                await GenerateGenericMusicCommentAsync();
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Audio stopped
+                        Console.WriteLine($"🔇 Audio playback stopped");
+                        _currentTrack = "";
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error checking audio changes: {ex.Message}");
+            }
+        }
+
+        private async Task<bool> IsAudioCurrentlyPlayingAsync()
+        {
+            try
+            {
+                // Method 1: Check bluealsa-aplay CPU usage
+                var processes = await RunCommandWithOutputAsync("ps", "aux | grep bluealsa-aplay | grep -v grep");
+                if (!string.IsNullOrEmpty(processes))
+                {
+                    var lines = processes.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var line in lines)
+                    {
+                        // Parse CPU usage (3rd column in ps aux output)
+                        var parts = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length >= 3 && float.TryParse(parts[2], out float cpu) && cpu > 0.5)
+                        {
+                            return true;
+                        }
+                    }
+                }
+                
+                // Method 2: Check PulseAudio for active streams
+                var pactl = await RunCommandWithOutputAsync("pactl", "list sink-inputs short");
+                if (!string.IsNullOrEmpty(pactl?.Trim()))
+                {
+                    return true;
+                }
+                
+                // Method 3: Check ALSA for active PCM streams
+                var alsaInfo = await RunCommandWithOutputAsync("cat", "/proc/asound/pcm");
+                if (!string.IsNullOrEmpty(alsaInfo) && alsaInfo.Contains("RUNNING"))
+                {
+                    return true;
+                }
+                
+                return false;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private async Task GenerateGenericMusicCommentAsync()
+        {
+            var prompts = new[]
+            {
+                "Oh, someone started playing music. Let me guess - it's either terrible pop music or something I've never heard of?",
+                "Music detected! I can't see what it is, but knowing your taste, I'm already preparing my sarcasm.",
+                "Audio is playing... and somehow I just know it's going to be questionable.",
+                "Well, well, someone pressed play. Time to judge whatever sonic experience you've chosen.",
+                "Music started! I'd tell you what I think about the song, but your device is being mysterious about it."
+            };
+            
+            var prompt = prompts[_random.Next(prompts.Length)];
+            await GenerateAndSpeakCommentAsync(prompt);
         }
 
         private async Task CheckConnectedDevicesAsync()
@@ -243,69 +354,74 @@ namespace BluetoothSpeaker
         {
             try
             {
-                // Method 1: Try BlueALSA metadata (most direct for Bluetooth)
+                // Method 1: Try MPRIS D-Bus interface directly
+                var mprisMetadata = await GetMPRISMetadataAsync();
+                if (!string.IsNullOrEmpty(mprisMetadata) && mprisMetadata != _currentTrack)
+                {
+                    Console.WriteLine($"🎵 Now playing: {mprisMetadata}");
+                    _currentTrack = mprisMetadata;
+                    await EnsureAudioRoutingAsync();
+                    if (ShouldGenerateComment())
+                    {
+                        await GenerateTrackCommentAsync(mprisMetadata);
+                    }
+                    return;
+                }
+                
+                // Method 2: Try BlueZ MediaPlayer1 interface
+                var bluezMetadata = await GetBlueZMediaPlayerMetadataAsync();
+                if (!string.IsNullOrEmpty(bluezMetadata) && bluezMetadata != _currentTrack)
+                {
+                    Console.WriteLine($"🎵 Now playing: {bluezMetadata}");
+                    _currentTrack = bluezMetadata;
+                    await EnsureAudioRoutingAsync();
+                    if (ShouldGenerateComment())
+                    {
+                        await GenerateTrackCommentAsync(bluezMetadata);
+                    }
+                    return;
+                }
+                
+                // Method 3: Try playerctl with specific player detection
+                var playerctlMetadata = await GetPlayerCtlMetadataAsync();
+                if (!string.IsNullOrEmpty(playerctlMetadata) && playerctlMetadata != _currentTrack)
+                {
+                    Console.WriteLine($"🎵 Now playing: {playerctlMetadata}");
+                    _currentTrack = playerctlMetadata;
+                    await EnsureAudioRoutingAsync();
+                    if (ShouldGenerateComment())
+                    {
+                        await GenerateTrackCommentAsync(playerctlMetadata);
+                    }
+                    return;
+                }
+                
+                // Method 4: Audio activity detection (fallback)
+                var audioActivity = await DetectAudioActivityAsync();
+                if (!string.IsNullOrEmpty(audioActivity) && audioActivity != _currentTrack)
+                {
+                    Console.WriteLine($"🎵 {audioActivity}");
+                    _currentTrack = audioActivity;
+                    await EnsureAudioRoutingAsync();
+                    if (ShouldGenerateComment())
+                    {
+                        await GenerateTrackCommentAsync(audioActivity);
+                    }
+                    return;
+                }
+                
+                // Method 5: Try BlueALSA metadata (original method)
                 var blualsaMetadata = await GetBlueALSAMetadataAsync();
                 if (!string.IsNullOrEmpty(blualsaMetadata) && blualsaMetadata != _currentTrack)
                 {
                     Console.WriteLine($"🎵 Now playing: {blualsaMetadata}");
                     _currentTrack = blualsaMetadata;
-                    
-                    // Ensure audio routing is working
                     await EnsureAudioRoutingAsync();
-                    
-                    // Generate AI commentary
                     if (ShouldGenerateComment())
                     {
                         await GenerateTrackCommentAsync(blualsaMetadata);
                     }
                     return;
-                }
-                
-                // Method 2: Try playerctl (works for some devices)
-                var metadata = await RunCommandWithOutputAsync("playerctl", "metadata");
-                if (!string.IsNullOrEmpty(metadata))
-                {
-                    var trackInfo = ParseTrackInfo(metadata);
-                    
-                    if (!string.IsNullOrEmpty(trackInfo) && trackInfo != _currentTrack)
-                    {
-                        Console.WriteLine($"🎵 Now playing: {trackInfo}");
-                        _currentTrack = trackInfo;
-                        
-                        // Ensure audio routing is working
-                        await EnsureAudioRoutingAsync();
-                        
-                        // Generate AI commentary
-                        if (ShouldGenerateComment())
-                        {
-                            await GenerateTrackCommentAsync(trackInfo);
-                        }
-                    }
-                    return;
-                }
-                
-                // Method 3: Try bluetoothctl as fallback
-                if (!string.IsNullOrEmpty(_connectedDeviceAddress) && _connectedDeviceAddress != "detected")
-                {
-                    var playerInfo = await RunCommandWithOutputAsync("bluetoothctl", "info " + _connectedDeviceAddress);
-                    if (!string.IsNullOrEmpty(playerInfo))
-                    {
-                        var trackInfo = ParseBluetoothctlTrackInfo(playerInfo);
-                        
-                        if (!string.IsNullOrEmpty(trackInfo) && trackInfo != _currentTrack)
-                        {
-                            Console.WriteLine($"🎵 Now playing: {trackInfo}");
-                            _currentTrack = trackInfo;
-                            
-                            // Ensure audio routing is working
-                            await EnsureAudioRoutingAsync();
-                            
-                            if (ShouldGenerateComment())
-                            {
-                                await GenerateTrackCommentAsync(trackInfo);
-                            }
-                        }
-                    }
                 }
             }
             catch (Exception ex)
@@ -1027,62 +1143,379 @@ namespace BluetoothSpeaker
 
         public async Task DebugTrackDetectionAsync()
         {
-            Console.WriteLine("=== TRACK DETECTION DEBUG ===");
+            Console.WriteLine("=== COMPREHENSIVE TRACK DETECTION DEBUG ===");
             
-            Console.WriteLine("\n1. Testing playerctl metadata...");
-            var playerctlResult = await RunCommandWithOutputAsync("playerctl", "metadata");
-            Console.WriteLine($"   Raw output length: {playerctlResult?.Length ?? 0} characters");
-            if (!string.IsNullOrEmpty(playerctlResult) && playerctlResult.Length < 500)
+            Console.WriteLine("\n1. Testing MPRIS D-Bus interface...");
+            var mprisResult = await GetMPRISMetadataAsync();
+            Console.WriteLine($"   MPRIS result: '{mprisResult}'");
+            
+            Console.WriteLine("\n2. Testing BlueZ MediaPlayer interface...");
+            var bluezResult = await GetBlueZMediaPlayerMetadataAsync();
+            Console.WriteLine($"   BlueZ result: '{bluezResult}'");
+            
+            Console.WriteLine("\n3. Testing enhanced PlayerCtl...");
+            var playerctlResult = await GetPlayerCtlMetadataAsync();
+            Console.WriteLine($"   PlayerCtl result: '{playerctlResult}'");
+            
+            Console.WriteLine("\n4. Testing audio activity detection...");
+            var audioActivity = await DetectAudioActivityAsync();
+            Console.WriteLine($"   Audio activity: '{audioActivity}'");
+            
+            Console.WriteLine("\n5. Testing BlueALSA metadata...");
+            var blualsaResult = await GetBlueALSAMetadataAsync();
+            Console.WriteLine($"   BlueALSA result: '{blualsaResult}'");
+            
+            Console.WriteLine("\n6. Raw command tests...");
+            
+            // Test D-Bus list names
+            var dbusNames = await RunCommandWithOutputAsync("dbus-send", "--session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.ListNames");
+            Console.WriteLine($"   D-Bus session names found: {(!string.IsNullOrEmpty(dbusNames) ? "Yes" : "No")}");
+            if (!string.IsNullOrEmpty(dbusNames))
             {
-                Console.WriteLine($"   Raw output: {playerctlResult}");
-                var parsed = ParseTrackInfo(playerctlResult);
-                Console.WriteLine($"   Parsed result: '{parsed}'");
-            }
-            
-            Console.WriteLine("\n2. Testing playerctl title/artist separately...");
-            var title = await RunCommandWithOutputAsync("playerctl", "metadata title");
-            var artist = await RunCommandWithOutputAsync("playerctl", "metadata artist");
-            Console.WriteLine($"   Title: '{title?.Trim()}'");
-            Console.WriteLine($"   Artist: '{artist?.Trim()}'");
-            
-            Console.WriteLine("\n3. Testing playerctl players list...");
-            var players = await RunCommandWithOutputAsync("playerctl", "--list-all");
-            Console.WriteLine($"   Available players: '{players?.Trim()}'");
-            
-            Console.WriteLine("\n4. Testing bluetoothctl info...");
-            if (!string.IsNullOrEmpty(_connectedDeviceAddress) && _connectedDeviceAddress != "detected")
-            {
-                var deviceInfo = await RunCommandWithOutputAsync("bluetoothctl", "info " + _connectedDeviceAddress);
-                Console.WriteLine($"   Device info length: {deviceInfo?.Length ?? 0} characters");
-                if (!string.IsNullOrEmpty(deviceInfo))
+                var mprisPlayers = dbusNames.Split('\n').Where(l => l.Contains("org.mpris.MediaPlayer2.")).ToList();
+                Console.WriteLine($"   MPRIS players: {mprisPlayers.Count}");
+                foreach (var player in mprisPlayers.Take(3))
                 {
-                    var parsed = ParseBluetoothctlTrackInfo(deviceInfo);
-                    Console.WriteLine($"   Parsed track info: '{parsed}'");
-                    
-                    // Show relevant lines
-                    var lines = deviceInfo.Split('\n');
-                    foreach (var line in lines)
-                    {
-                        if (line.Contains("Artist:") || line.Contains("Title:") || line.Contains("Track:"))
-                        {
-                            Console.WriteLine($"   Found: {line.Trim()}");
-                        }
-                    }
+                    Console.WriteLine($"     - {player.Trim()}");
                 }
             }
-            else
+            
+            // Test BlueALSA list
+            var blualsaList = await RunCommandWithOutputAsync("bluealsa-aplay", "-l");
+            Console.WriteLine($"   BlueALSA devices: {(!string.IsNullOrEmpty(blualsaList) ? "Yes" : "No")}");
+            if (!string.IsNullOrEmpty(blualsaList))
             {
-                Console.WriteLine("   No device connected for testing");
+                Console.WriteLine($"   BlueALSA output: {blualsaList.Substring(0, Math.Min(200, blualsaList.Length))}...");
             }
+            
+            // Test running processes
+            var processes = await RunCommandWithOutputAsync("ps", "aux | grep bluealsa-aplay | grep -v grep");
+            Console.WriteLine($"   Active bluealsa-aplay processes: {(!string.IsNullOrEmpty(processes) ? "Yes" : "No")}");
+            
+            // Test PulseAudio
+            var pactl = await RunCommandWithOutputAsync("pactl", "list sink-inputs");
+            Console.WriteLine($"   PulseAudio sink inputs: {(!string.IsNullOrEmpty(pactl) ? "Yes" : "No")}");
             
             Console.WriteLine("\n=== Current State ===");
             Console.WriteLine($"Connected Device: {_connectedDeviceName ?? "None"}");
             Console.WriteLine($"Device Address: {_connectedDeviceAddress ?? "None"}");
             Console.WriteLine($"Current Track: {_currentTrack ?? "None"}");
             
+            Console.WriteLine("\n=== RECOMMENDATION ===");
+            if (!string.IsNullOrEmpty(mprisResult))
+                Console.WriteLine("✅ MPRIS interface working - should get track info");
+            else if (!string.IsNullOrEmpty(bluezResult))
+                Console.WriteLine("✅ BlueZ MediaPlayer working - should get track info");
+            else if (!string.IsNullOrEmpty(playerctlResult))
+                Console.WriteLine("✅ PlayerCtl working - should get track info");
+            else if (!string.IsNullOrEmpty(audioActivity))
+                Console.WriteLine("⚠️ Audio detected but no metadata - will comment on audio activity");
+            else
+                Console.WriteLine("❌ No track detection methods working - try playing music and run debug again");
+            
             Console.WriteLine("\n=== END DEBUG ===");
         }
 
-        // ...existing code...
+        private async Task<string> GetMPRISMetadataAsync()
+        {
+            try
+            {
+                // List all MPRIS players and try each one
+                var dbusNames = await RunCommandWithOutputAsync("dbus-send", "--session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.ListNames");
+                
+                if (string.IsNullOrEmpty(dbusNames)) return "";
+                
+                var lines = dbusNames.Split('\n');
+                foreach (var line in lines)
+                {
+                    if (line.Contains("org.mpris.MediaPlayer2."))
+                    {
+                        var playerMatch = System.Text.RegularExpressions.Regex.Match(line, @"org\.mpris\.MediaPlayer2\.(\w+)");
+                        if (playerMatch.Success)
+                        {
+                            var playerName = playerMatch.Groups[1].Value;
+                            var metadata = await GetMPRISPlayerMetadataAsync(playerName);
+                            if (!string.IsNullOrEmpty(metadata))
+                            {
+                                return metadata;
+                            }
+                        }
+                    }
+                }
+                
+                return "";
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error getting MPRIS metadata: {ex.Message}");
+                return "";
+            }
+        }
+
+        private async Task<string> GetMPRISPlayerMetadataAsync(string playerName)
+        {
+            try
+            {
+                var command = $"--session --print-reply --dest=org.mpris.MediaPlayer2.{playerName} /org/mpris/MediaPlayer2 org.freedesktop.DBus.Properties.Get string:org.mpris.MediaPlayer2.Player string:Metadata";
+                var result = await RunCommandWithOutputAsync("dbus-send", command);
+                
+                if (!string.IsNullOrEmpty(result))
+                {
+                    return ParseMPRISMetadata(result);
+                }
+                
+                return "";
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private string ParseMPRISMetadata(string mprisOutput)
+        {
+            try
+            {
+                string artist = "";
+                string title = "";
+                
+                var lines = mprisOutput.Split('\n');
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    var line = lines[i];
+                    
+                    if (line.Contains("xesam:artist"))
+                    {
+                        // Look for string value in next few lines
+                        for (int j = i + 1; j < Math.Min(i + 5, lines.Length); j++)
+                        {
+                            var match = System.Text.RegularExpressions.Regex.Match(lines[j], @"string\s+""([^""]+)""");
+                            if (match.Success)
+                            {
+                                artist = match.Groups[1].Value;
+                                break;
+                            }
+                        }
+                    }
+                    else if (line.Contains("xesam:title"))
+                    {
+                        // Look for string value in next few lines
+                        for (int j = i + 1; j < Math.Min(i + 5, lines.Length); j++)
+                        {
+                            var match = System.Text.RegularExpressions.Regex.Match(lines[j], @"string\s+""([^""]+)""");
+                            if (match.Success)
+                            {
+                                title = match.Groups[1].Value;
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                if (!string.IsNullOrEmpty(artist) && !string.IsNullOrEmpty(title))
+                {
+                    return $"{artist} - {title}";
+                }
+                else if (!string.IsNullOrEmpty(title))
+                {
+                    return title;
+                }
+                
+                return "";
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private async Task<string> GetBlueZMediaPlayerMetadataAsync()
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(_connectedDeviceAddress) || _connectedDeviceAddress == "detected")
+                    return "";
+                
+                // Try to get media player interface from BlueZ
+                var devicePath = $"/org/bluez/hci0/dev_{_connectedDeviceAddress.Replace(":", "_")}
+";
+                
+                // First, check if device has MediaPlayer1 interface
+                var introspect = await RunCommandWithOutputAsync("dbus-send", 
+                    $"--system --print-reply --dest=org.bluez {devicePath} org.freedesktop.DBus.Introspectable.Introspect");
+                
+                if (!string.IsNullOrEmpty(introspect) && introspect.Contains("MediaPlayer1"))
+                {
+                    // Try to get track metadata
+                    var metadata = await RunCommandWithOutputAsync("dbus-send",
+                        $"--system --print-reply --dest=org.bluez {devicePath}/player0 org.freedesktop.DBus.Properties.Get string:org.bluez.MediaPlayer1 string:Track");
+                    
+                    if (!string.IsNullOrEmpty(metadata))
+                    {
+                        return ParseBlueZMetadata(metadata);
+                    }
+                }
+                
+                return "";
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error getting BlueZ metadata: {ex.Message}");
+                return "";
+            }
+        }
+
+        private string ParseBlueZMetadata(string bluezOutput)
+        {
+            try
+            {
+                string artist = "";
+                string title = "";
+                
+                var lines = bluezOutput.Split('\n');
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    var line = lines[i];
+                    
+                    if (line.Contains("Artist"))
+                    {
+                        var match = System.Text.RegularExpressions.Regex.Match(line, @"string\s+""([^""]+)""");
+                        if (match.Success)
+                        {
+                            artist = match.Groups[1].Value;
+                        }
+                    }
+                    else if (line.Contains("Title"))
+                    {
+                        var match = System.Text.RegularExpressions.Regex.Match(line, @"string\s+""([^""]+)""");
+                        if (match.Success)
+                        {
+                            title = match.Groups[1].Value;
+                        }
+                    }
+                }
+                
+                if (!string.IsNullOrEmpty(artist) && !string.IsNullOrEmpty(title))
+                {
+                    return $"{artist} - {title}";
+                }
+                else if (!string.IsNullOrEmpty(title))
+                {
+                    return title;
+                }
+                
+                return "";
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private async Task<string> GetPlayerCtlMetadataAsync()
+        {
+            try
+            {
+                // Method 1: Try default playerctl
+                var metadata = await RunCommandWithOutputAsync("playerctl", "metadata");
+                if (!string.IsNullOrEmpty(metadata))
+                {
+                    var parsed = ParseTrackInfo(metadata);
+                    if (!string.IsNullOrEmpty(parsed))
+                        return parsed;
+                }
+                
+                // Method 2: List available players and try each
+                var players = await RunCommandWithOutputAsync("playerctl", "--list-all");
+                if (!string.IsNullOrEmpty(players))
+                {
+                    var playerList = players.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var player in playerList)
+                    {
+                        var playerMetadata = await RunCommandWithOutputAsync("playerctl", $"--player={player.Trim()} metadata");
+                        if (!string.IsNullOrEmpty(playerMetadata))
+                        {
+                            var parsed = ParseTrackInfo(playerMetadata);
+                            if (!string.IsNullOrEmpty(parsed))
+                                return parsed;
+                        }
+                    }
+                }
+                
+                // Method 3: Try simple title/artist queries
+                var title = await RunCommandWithOutputAsync("playerctl", "metadata title");
+                var artist = await RunCommandWithOutputAsync("playerctl", "metadata artist");
+                
+                title = title?.Trim();
+                artist = artist?.Trim();
+                
+                if (!string.IsNullOrEmpty(artist) && !string.IsNullOrEmpty(title))
+                {
+                    return $"{artist} - {title}";
+                }
+                else if (!string.IsNullOrEmpty(title))
+                {
+                    return title;
+                }
+                
+                return "";
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error with playerctl: {ex.Message}");
+                return "";
+            }
+        }
+
+        private async Task<string> DetectAudioActivityAsync()
+        {
+            try
+            {
+                // Method 1: Check if bluealsa-aplay is actively processing audio
+                var processes = await RunCommandWithOutputAsync("ps", "aux | grep bluealsa-aplay | grep -v grep");
+                if (!string.IsNullOrEmpty(processes))
+                {
+                    var lines = processes.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var line in lines)
+                    {
+                        if (line.Contains(_connectedDeviceAddress) || line.Contains("bluealsa-aplay"))
+                        {
+                            // Check CPU usage to see if it's actively processing
+                            var cpuMatch = System.Text.RegularExpressions.Regex.Match(line, @"\s+(\d+\.\d+)\s+");
+                            if (cpuMatch.Success && float.TryParse(cpuMatch.Groups[1].Value, out float cpu) && cpu > 0.1)
+                            {
+                                return "Audio playing - metadata unavailable";
+                            }
+                        }
+                    }
+                }
+                
+                // Method 2: Check ALSA PCM info for active streams
+                var pcmInfo = await RunCommandWithOutputAsync("cat", "/proc/asound/pcm");
+                if (!string.IsNullOrEmpty(pcmInfo) && pcmInfo.Contains("RUNNING"))
+                {
+                    return "Audio stream detected";
+                }
+                
+                // Method 3: Check if any audio is going through the system
+                var audioLevel = await RunCommandWithOutputAsync("amixer", "get Master");
+                if (!string.IsNullOrEmpty(audioLevel) && !audioLevel.Contains("[off]"))
+                {
+                    // Try to detect if there's actual audio activity
+                    var pactl = await RunCommandWithOutputAsync("pactl", "list sink-inputs");
+                    if (!string.IsNullOrEmpty(pactl) && pactl.Contains("State: RUNNING"))
+                    {
+                        return "Audio detected via PulseAudio";
+                    }
+                }
+                
+                return "";
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error detecting audio activity: {ex.Message}");
+                return "";
+            }
+        }
     }
 }
