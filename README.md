@@ -27,6 +27,28 @@ A Raspberry Pi Bluetooth speaker that not only plays your music but also provide
 
 ## Installation
 
+### Quick Start (Recommended)
+
+The easiest way to get started is with the all-in-one script:
+
+```bash
+git clone <your-repo-url>
+cd BluetoothSpeaker
+chmod +x run-on-pi.sh
+sudo ./run-on-pi.sh
+```
+
+This script will:
+- Install all dependencies
+- Configure Bluetooth and audio services
+- Set up the pairing agent
+- Build and run the application
+- Optionally set up auto-start on boot
+
+### Manual Installation
+
+If you prefer to install dependencies manually:
+
 ### 1. Prepare Raspberry Pi
 
 ```bash
@@ -62,7 +84,7 @@ Option 2 - The application will prompt you for the key when you run it.
 ### 4. Run the Application
 
 ```bash
-sudo dotnet run
+sudo ./run-on-pi.sh
 ```
 
 Note: `sudo` is required for Bluetooth system configuration on first run.
@@ -73,12 +95,12 @@ If you connect but no audio plays through the speaker (stays on your phone):
 
 1. **Run the setup script again**:
    ```bash
-   sudo ./setup-raspberry-pi.sh
+   sudo ./run-on-pi.sh
    ```
 
-2. **Or run the audio fix script**:
+2. **Or use the built-in audio fix**:
    ```bash
-   sudo ./fix-audio-routing.sh
+   sudo ./run-on-pi.sh --fix-audio
    ```
 
 3. **Verify services are running**:
@@ -88,6 +110,14 @@ If you connect but no audio plays through the speaker (stays on your phone):
 
 The most common issue is that the audio routing service (`bluealsa-aplay`) 
 isn't running. This service routes audio from BlueALSA to your speakers.
+
+### Assembly Build Issues?
+
+If you get assembly attribute errors when building:
+
+```bash
+./run-on-pi.sh --fix-assembly
+```
 
 ## Usage
 
@@ -169,16 +199,31 @@ sudo systemctl status bluetooth
 hciconfig
 ```
 
-### Audio Issues
+### Audio Troubleshooting
 ```bash
+# Restart Bluetooth services
+sudo systemctl restart bluetooth
+sudo systemctl restart bluealsa
+sudo systemctl restart bluealsa-aplay
+
+# Check Bluetooth status
+sudo systemctl status bluetooth
+hciconfig
+
+# Fix audio routing specifically
+sudo ./run-on-pi.sh --fix-audio
+
 # List audio devices
 aplay -l
 
 # Test audio output
 speaker-test -t wav
 
-# Check PulseAudio
+# Check PulseAudio (if using)
 pulseaudio --check -v
+
+# Check BlueALSA devices
+bluealsa-aplay -l
 ```
 
 ### D-Bus Issues
