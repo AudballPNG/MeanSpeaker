@@ -82,7 +82,7 @@ namespace BluetoothSpeaker
         private Dictionary<string, DeviceSession> _deviceSessions = new();
         
         // Global state tracking
-        private readonly TimeSpan _commentThrottle = TimeSpan.FromMinutes(1); // Reduced throttle for better session experience
+        private readonly TimeSpan _commentThrottle = TimeSpan.FromSeconds(30); // Reduced for testing - was 1 minute
         
         // Setup tracking
         private readonly string _setupMarkerFile = "/etc/bluetooth-speaker-setup-complete";
@@ -118,73 +118,71 @@ namespace BluetoothSpeaker
                 await RunSetupAsync();
             }
 
-            // Initialize D-Bus connection with retry logic
+            // Initialize D-Bus connection
             await InitializeDBusAsync();
 
             // Verify audio setup
             await VerifyAudioSetupAsync();
-            
-            // Debug media player connectivity
-            await DebugMediaPlayerConnectivityAsync();
 
             Console.WriteLine("Bluetooth Speaker initialized. Ready to receive audio and insult your music taste!");
         }
-        
-        private async Task DebugMediaPlayerConnectivityAsync()
+
+        public async Task StartMonitoringAsync()
         {
-            try
-            {
-                Console.WriteLine("🔍 Debugging media player connectivity...");
-                
-                // Check D-Bus system connection
-                var objects = await _objectManager!.GetManagedObjectsAsync();
-                Console.WriteLine($"Found {objects.Count} D-Bus objects");
-                
-                // Look for media players
-                int mediaPlayerCount = 0;
-                foreach (var obj in objects)
-                {
-                    if (obj.Value.ContainsKey("org.bluez.MediaPlayer1"))
-                    {
-                        mediaPlayerCount++;
-                        Console.WriteLine($"Found MediaPlayer: {obj.Key}");
-                    }
-                }
-                
-                if (mediaPlayerCount == 0)
-                {
-                    Console.WriteLine("⚠️  No MediaPlayer interfaces found in BlueZ");
-                    Console.WriteLine("   This may indicate that devices need to be connected first");
-                    Console.WriteLine("   or that BlueALSA media player support is not enabled");
-                }
-                else
-                {
-                    Console.WriteLine($"✅ Found {mediaPlayerCount} MediaPlayer interfaces");
-                }
-                
-                // Test playerctl
-                var playerctlOutput = await RunCommandWithOutputAsync("playerctl", "-l");
-                if (string.IsNullOrEmpty(playerctlOutput.Trim()))
-                {
-                    Console.WriteLine("⚠️  No playerctl media players detected");
-                    Console.WriteLine("   This is normal when no devices are connected");
-                }
-                else
-                {
-                    Console.WriteLine($"✅ Playerctl detected players: {playerctlOutput.Trim()}");
-                }
-                
-                // Check BlueALSA version and capabilities
-                var bluelsaVersion = await RunCommandWithOutputAsync("bluealsa", "--version");
-                Console.WriteLine($"BlueALSA version: {bluelsaVersion.Trim()}");
-                
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Warning during media player debug: {ex.Message}");
-            }
+            if (_disposed) return;
+
+            _monitoringCancellation = new CancellationTokenSource();
+            var token = _monitoringCancellation.Token;
+
+            Console.WriteLine("Starting music monitoring...");
+
+            // Enable Bluetooth adapter and make discoverable
+            await ConfigureBluetoothAsync();
+
+            // Start monitoring tasks
+            _ = Task.Run(() => MonitorDevicesAsync(token), token);
+            _ = Task.Run(() => MonitorMusicAsync(token), token);
+            _ = Task.Run(() => MonitorAudioRoutingAsync(token), token);
+
+            Console.WriteLine("Monitoring started. Connect your device to start streaming music!");
         }
-        
+
+        public void StopMonitoring()
+        {
+            Console.WriteLine("Stopping music monitoring...");
+            
+            _monitoringCancellation?.Cancel();
+            
+            // Clean up watchers and display session summaries
+            foreach (var (address, deviceEntry) in _activeDevices)
+            {
+                deviceEntry.StatusWatcher?.Dispose();
+                
+                if (_deviceSessions.TryGetValue(address, out var session))
+                {
+                    Console.WriteLine($"\n=== SESSION SUMMARY FOR {session.DeviceName} ===");
+                    Console.WriteLine($"Connected: {session.ConnectedAt:yyyy-MM-dd HH:mm:ss}");
+                    Console.WriteLine($"Session Duration: {session.SessionDuration:hh\\:mm\\:ss}");
+                    Console.WriteLine($"Total Tracks Played: {session.TotalTracksPlayed}");
+                    Console.WriteLine($"Unique Tracks: {session.PlayedTracks.Count}");
+                    Console.WriteLine($"Comments Generated: {session.GeneratedComments.Count}");
+                    
+                    if (session.TrackPlayCount.Any())
+                    {
+                        var mostPlayed = session.TrackPlayCount.OrderByDescending(kvp => kvp.Value).First();
+                        Console.WriteLine($"Most Played: {mostPlayed.Key} ({mostPlayed.Value} times)");
+                    }
+                    
+                    Console.WriteLine("=== END SESSION SUMMARY ===\n");
+                }
+            }
+            
+            _activeDevices.Clear();
+            _deviceSessions.Clear();
+            
+            Console.WriteLine("Monitoring stopped.");
+        }
+
         private async Task InitializeDBusAsync()
         {
             try
@@ -296,21 +294,66 @@ namespace BluetoothSpeaker
                             // Ensure audio routing is working for this device
                             await EnsureAudioRoutingAsync(address);
                             
-                            // Find media player
-                            var playerInfo = await _objectManager.FindMediaPlayerForDeviceAsync(path);
-                            
+                            // Find media player - try multiple times as it may take a moment to appear
                             IDisposable? watcher = null;
+                            var playerInfo = await _objectManager.FindMediaPlayerForDeviceAsync(path);
                             
                             if (playerInfo.HasValue)
                             {
+                                Console.WriteLine($"Media player found for {name}");
+                                
                                 // Set up media player watcher
-                                watcher = await playerInfo.Value.Player.WatchPropertiesAsync(changes =>
+                                try
                                 {
-                                    _ = Task.Run(() => HandleMediaPlayerChangesAsync(address, changes));
+                                    watcher = await playerInfo.Value.Player.WatchPropertiesAsync(changes =>
+                                    {
+                                        _ = Task.Run(() => HandleMediaPlayerChangesAsync(address, changes));
+                                    });
+                                    Console.WriteLine($"Media player watcher set up for {name}");
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"Failed to set up media player watcher for {name}: {ex.Message}");
+                                }
+                            }
+                            else
+                            {
+                                Console.WriteLine($"No media player found for {name} yet, will retry later");
+                                
+                                // Schedule a retry to find the media player later
+                                _ = Task.Run(async () =>
+                                {
+                                    for (int i = 0; i < 10; i++) // Try for 30 seconds
+                                    {
+                                        await Task.Delay(3000);
+                                        var retryPlayerInfo = await _objectManager.FindMediaPlayerForDeviceAsync(path);
+                                        if (retryPlayerInfo.HasValue)
+                                        {
+                                            Console.WriteLine($"Media player found for {name} on retry {i + 1}");
+                                            try
+                                            {
+                                                var retryWatcher = await retryPlayerInfo.Value.Player.WatchPropertiesAsync(changes =>
+                                                {
+                                                    _ = Task.Run(() => HandleMediaPlayerChangesAsync(address, changes));
+                                                });
+                                                
+                                                // Update the device entry with the new watcher
+                                                if (_activeDevices.TryGetValue(address, out var currentEntry))
+                                                {
+                                                    var updatedEntry = (currentEntry.Device, currentEntry.Path, retryPlayerInfo.Value.Player, retryPlayerInfo.Value.Path, retryWatcher);
+                                                    _activeDevices[address] = updatedEntry;
+                                                }
+                                                Console.WriteLine($"Media player watcher set up for {name} on retry");
+                                                break;
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                Console.WriteLine($"Failed to set up media player watcher for {name} on retry: {ex.Message}");
+                                            }
+                                        }
+                                    }
                                 });
-                            
-                            Console.WriteLine($"Media player found for {name}");
-                        }
+                            }
                             
                             var deviceEntry = (device, path, playerInfo?.Player, playerInfo?.Path, watcher);
                             _activeDevices[address] = deviceEntry;
@@ -336,90 +379,77 @@ namespace BluetoothSpeaker
 
         private async Task MonitorMusicAsync(CancellationToken cancellationToken)
         {
-            Console.WriteLine("🎵 Starting enhanced music monitoring...");
-            
             while (!cancellationToken.IsCancellationRequested)
             {
                 try
                 {
-                    // Primary method: Use playerctl for music monitoring
-                    var playerctlStatus = await RunCommandWithOutputAsync("playerctl", "status");
-                    var playerctlMetadata = await RunCommandWithOutputAsync("playerctl", "metadata");
+                    // Use playerctl as fallback for music monitoring
+                    var status = await RunCommandWithOutputAsync("playerctl", "status");
+                    var metadata = await RunCommandWithOutputAsync("playerctl", "metadata");
                     
-                    // Fallback method: Monitor BlueALSA directly
-                    var bluelsaInfo = await RunCommandWithOutputAsync("bluealsa-cli", "list-devices");
-                    
-                    // Enhanced debugging
-                    if (!string.IsNullOrEmpty(playerctlMetadata))
+                    // Debug output
+                    if (!string.IsNullOrEmpty(status) || !string.IsNullOrEmpty(metadata))
                     {
-                        Console.WriteLine($"[DEBUG] Playerctl metadata detected: {playerctlMetadata.Length} chars");
-                        
-                        var trackInfo = ParseTrackInfo(playerctlMetadata);
+                        Console.WriteLine($"[DEBUG] PlayerCtl Status: '{status.Trim()}'");
+                        if (!string.IsNullOrEmpty(metadata))
+                            Console.WriteLine($"[DEBUG] PlayerCtl Metadata available: {metadata.Length} chars");
+                    }
+                    
+                    if (!string.IsNullOrEmpty(metadata))
+                    {
+                        var trackInfo = ParseTrackInfo(metadata);
                         
                         if (!string.IsNullOrEmpty(trackInfo))
                         {
-                            Console.WriteLine($"[DEBUG] Parsed track: {trackInfo}");
+                            Console.WriteLine($"[DEBUG] Parsed track: '{trackInfo}'");
                             
-                            // Find which device is playing - enhanced logic
-                            var activeSession = FindActiveDeviceSession();
-                            if (activeSession != null)
+                            // Try to match track to specific device session
+                            bool trackHandled = false;
+                            foreach (var session in _deviceSessions.Values)
                             {
-                                if (trackInfo != activeSession.CurrentTrack)
+                                if (trackInfo != session.CurrentTrack)
                                 {
-                                    Console.WriteLine($"[{activeSession.DeviceName}] Track changed: {trackInfo}");
-                                    activeSession.AddTrack(trackInfo);
+                                    Console.WriteLine($"[DEBUG] Adding track '{trackInfo}' to session for {session.DeviceName}");
+                                    session.AddTrack(trackInfo);
+                                    
+                                    Console.WriteLine($"Now playing on {session.DeviceName}: {trackInfo}");
                                     
                                     // Generate comment with session context
-                                    if (ShouldGenerateCommentForDevice(activeSession.DeviceAddress))
+                                    if (ShouldGenerateCommentForDevice(session.DeviceAddress))
                                     {
-                                        await GenerateCommentAboutTrackAsync(activeSession.DeviceAddress, trackInfo);
+                                        Console.WriteLine($"[DEBUG] Generating comment for {session.DeviceName}");
+                                        await GenerateCommentAboutTrackAsync(session.DeviceAddress, trackInfo);
                                     }
+                                    else
+                                    {
+                                        Console.WriteLine($"[DEBUG] Skipping comment for {session.DeviceName} (throttled or random)");
+                                    }
+                                    trackHandled = true;
+                                    break; // Only handle for one session to avoid duplicates
                                 }
                             }
-                            else
+                            
+                            if (!trackHandled && _deviceSessions.Any())
                             {
-                                Console.WriteLine("[DEBUG] No active device session found for track");
+                                Console.WriteLine($"[DEBUG] Track '{trackInfo}' already current for all sessions");
                             }
                         }
                         else
                         {
-                            Console.WriteLine("[DEBUG] Could not parse track info from metadata");
-                        }
-                    }
-                    else
-                    {
-                        Console.WriteLine("[DEBUG] No playerctl metadata available");
-                        
-                        // Try alternative method: check MPRIS directly
-                        var mprisPlayers = await RunCommandWithOutputAsync("dbus-send", "--session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.ListNames");
-                        if (mprisPlayers.Contains("org.mpris.MediaPlayer2"))
-                        {
-                            Console.WriteLine("[DEBUG] MPRIS player detected via D-Bus");
+                            Console.WriteLine("[DEBUG] Failed to parse track info from metadata");
                         }
                     }
                     
                     // Check playback state for all sessions
-                    bool isPlaying = playerctlStatus.Contains("Playing");
-                    bool isDetectedPlaying = false;
-                    
+                    bool isPlaying = status.Contains("Playing");
                     foreach (var session in _deviceSessions.Values)
                     {
                         bool wasPlaying = session.IsPlaying;
                         session.IsPlaying = isPlaying;
                         
-                        if (isPlaying)
+                        if (isPlaying && !wasPlaying)
                         {
-                            isDetectedPlaying = true;
-                            if (!wasPlaying)
-                            {
-                                Console.WriteLine($"[{session.DeviceName}] Music started playing");
-                                
-                                // Welcome back message
-                                if (_random.Next(0, 3) == 0) // 33% chance
-                                {
-                                    await GenerateCommentForDeviceAsync(session.DeviceAddress, "Oh, you're back for more musical punishment? Let's see what questionable choices you've made this time.");
-                                }
-                            }
+                            Console.WriteLine($"[{session.DeviceName}] Music started playing");
                         }
                         else if (!isPlaying && wasPlaying)
                         {
@@ -430,12 +460,6 @@ namespace BluetoothSpeaker
                                 await GenerateCommentForDeviceAsync(session.DeviceAddress, "What, couldn't handle the truth about your music taste? Good choice pausing that.");
                             }
                         }
-                    }
-                    
-                    // Periodic status update
-                    if (!isDetectedPlaying && _deviceSessions.Any())
-                    {
-                        Console.WriteLine($"[DEBUG] No active playback detected. Connected devices: {_deviceSessions.Count}");
                     }
                     
                     await Task.Delay(3000, cancellationToken);
@@ -450,14 +474,6 @@ namespace BluetoothSpeaker
                     await Task.Delay(5000, cancellationToken);
                 }
             }
-        }
-        
-        private DeviceSession? FindActiveDeviceSession()
-        {
-            // Enhanced logic to find the active device
-            // For now, return the first connected device
-            // This could be enhanced to detect which device is actually playing
-            return _deviceSessions.Values.FirstOrDefault();
         }
 
         private async Task HandleMediaPlayerChangesAsync(string deviceAddress, PropertyChanges changes)
@@ -504,10 +520,21 @@ namespace BluetoothSpeaker
         private bool ShouldGenerateCommentForDevice(string deviceAddress)
         {
             if (!_deviceSessions.TryGetValue(deviceAddress, out var session))
+            {
+                Console.WriteLine($"[DEBUG] No session found for device {deviceAddress}");
                 return false;
+            }
             
-            // Comment throttling and randomness per device session
-            return DateTime.Now - session.LastCommentTime > _commentThrottle && _random.Next(0, 3) == 0; // 33% chance
+            var timeSinceLastComment = DateTime.Now - session.LastCommentTime;
+            var throttleCheck = timeSinceLastComment > _commentThrottle;
+            var randomCheck = _random.Next(0, 3) == 0; // 33% chance
+            
+            Console.WriteLine($"[DEBUG] Comment check for {session.DeviceName}: " +
+                            $"Time since last: {timeSinceLastComment:mm\\:ss}, " +
+                            $"Throttle passed: {throttleCheck}, " +
+                            $"Random passed: {randomCheck}");
+            
+            return throttleCheck && randomCheck;
         }
 
         private async Task GenerateCommentAboutTrackAsync(string deviceAddress, string trackInfo)
@@ -548,10 +575,14 @@ namespace BluetoothSpeaker
         private async Task GenerateCommentForDeviceAsync(string deviceAddress, string prompt)
         {
             if (!_deviceSessions.TryGetValue(deviceAddress, out var session))
+            {
+                Console.WriteLine($"[DEBUG] Cannot generate comment - no session for device {deviceAddress}");
                 return;
+            }
 
             try
             {
+                Console.WriteLine($"[DEBUG] Generating comment for {session.DeviceName} with prompt: {prompt}");
                 session.LastCommentTime = DateTime.Now;
                 
                 var requestBody = new
@@ -572,11 +603,16 @@ namespace BluetoothSpeaker
                 _httpClient.DefaultRequestHeaders.Clear();
                 _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_openAiApiKey}");
 
+                Console.WriteLine($"[DEBUG] Sending request to OpenAI...");
                 var response = await _httpClient.PostAsync("https://api.openai.com/v1/chat/completions", content);
+                
+                Console.WriteLine($"[DEBUG] OpenAI response status: {response.StatusCode}");
                 
                 if (response.IsSuccessStatusCode)
                 {
                     var responseJson = await response.Content.ReadAsStringAsync();
+                    Console.WriteLine($"[DEBUG] OpenAI response length: {responseJson.Length} chars");
+                    
                     var jsonDoc = JsonDocument.Parse(responseJson);
                     
                     if (jsonDoc.RootElement.TryGetProperty("choices", out var choices) &&
@@ -593,19 +629,36 @@ namespace BluetoothSpeaker
                             // Speak the comment out loud
                             if (_enableSpeech)
                             {
+                                Console.WriteLine($"[DEBUG] Speaking comment: {comment}");
                                 await SpeakAsync(comment);
                             }
+                            else
+                            {
+                                Console.WriteLine("[DEBUG] Speech disabled, not speaking comment");
+                            }
                         }
+                        else
+                        {
+                            Console.WriteLine("[DEBUG] OpenAI returned empty comment");
+                        }
+                    }
+                    else
+                    {
+                        Console.WriteLine("[DEBUG] Failed to parse OpenAI response structure");
+                        Console.WriteLine($"[DEBUG] Response content: {responseJson}");
                     }
                 }
                 else
                 {
+                    var errorContent = await response.Content.ReadAsStringAsync();
                     Console.WriteLine($"Failed to generate comment: {response.StatusCode}");
+                    Console.WriteLine($"Error details: {errorContent}");
                 }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error generating comment: {ex.Message}");
+                Console.WriteLine($"Stack trace: {ex.StackTrace}");
             }
         }
 
@@ -1066,92 +1119,68 @@ echo ""Audio routing configured - BlueALSA will now route audio to speakers""
             }
         }
 
-        public async Task StartMonitoringAsync()
+        public async Task ShowStatusAsync()
         {
-            if (_monitoringCancellation != null)
-            {
-                Console.WriteLine("Monitoring is already running.");
-                return;
-            }
-
-            Console.WriteLine("Starting Bluetooth and music monitoring...");
+            Console.WriteLine("=== BLUETOOTH SPEAKER STATUS ===");
+            Console.WriteLine($"Active devices: {_activeDevices.Count}");
+            Console.WriteLine($"Device sessions: {_deviceSessions.Count}");
             
-            _monitoringCancellation = new CancellationTokenSource();
-            var token = _monitoringCancellation.Token;
-
-            // Configure Bluetooth first
-            await ConfigureBluetoothAsync();
-
-            // Start all monitoring tasks concurrently
-            var monitoringTasks = new[]
-            {
-                Task.Run(() => MonitorDevicesAsync(token), token),
-                Task.Run(() => MonitorMusicAsync(token), token),
-                Task.Run(() => MonitorAudioRoutingAsync(token), token)
-            };
-
-            Console.WriteLine("All monitoring services started successfully!");
-            
-            // Don't await here - let the monitoring run in background
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await Task.WhenAll(monitoringTasks);
-                }
-                catch (OperationCanceledException)
-                {
-                    Console.WriteLine("Monitoring stopped.");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Monitoring error: {ex.Message}");
-                }
-            }, token);
-        }
-
-        public void StopMonitoring()
-        {
-            if (_monitoringCancellation == null)
-            {
-                Console.WriteLine("Monitoring is not running.");
-                return;
-            }
-
-            Console.WriteLine("Stopping monitoring services...");
-            
-            // Cancel all monitoring tasks
-            _monitoringCancellation.Cancel();
-            
-            // Clean up device watchers
-            foreach (var device in _activeDevices.Values)
-            {
-                device.StatusWatcher?.Dispose();
-            }
-            _activeDevices.Clear();
-            
-            // Clean up sessions
             foreach (var session in _deviceSessions.Values)
             {
-                Console.WriteLine($"Session ended for {session.DeviceName}: {session.SessionDuration:hh\\:mm\\:ss}, {session.TotalTracksPlayed} tracks played");
+                Console.WriteLine($"\nDevice: {session.DeviceName} ({session.DeviceAddress})");
+                Console.WriteLine($"  Connected: {session.ConnectedAt:yyyy-MM-dd HH:mm:ss}");
+                Console.WriteLine($"  Current track: {session.CurrentTrack}");
+                Console.WriteLine($"  Total tracks: {session.TotalTracksPlayed}");
+                Console.WriteLine($"  Comments generated: {session.GeneratedComments.Count}");
+                Console.WriteLine($"  Last comment: {session.LastCommentTime:yyyy-MM-dd HH:mm:ss}");
+                Console.WriteLine($"  Is playing: {session.IsPlaying}");
             }
-            _deviceSessions.Clear();
             
-            _monitoringCancellation.Dispose();
-            _monitoringCancellation = null;
+            // Check services
+            Console.WriteLine("\n=== SERVICE STATUS ===");
+            var blualsaStatus = await RunCommandWithOutputAsync("systemctl", "is-active bluealsa");
+            var aplayStatus = await RunCommandWithOutputAsync("systemctl", "is-active bluealsa-aplay");
+            var bluetoothStatus = await RunCommandWithOutputAsync("systemctl", "is-active bluetooth");
             
-            Console.WriteLine("All monitoring services stopped.");
+            Console.WriteLine($"BlueALSA: {blualsaStatus.Trim()}");
+            Console.WriteLine($"BlueALSA-aplay: {aplayStatus.Trim()}");
+            Console.WriteLine($"Bluetooth: {bluetoothStatus.Trim()}");
+            
+            // Check playerctl
+            var playerStatus = await RunCommandWithOutputAsync("playerctl", "status");
+            var playerMetadata = await RunCommandWithOutputAsync("playerctl", "metadata");
+            
+            Console.WriteLine($"\nPlayerctl status: '{playerStatus.Trim()}'");
+            if (!string.IsNullOrEmpty(playerMetadata))
+            {
+                Console.WriteLine("Playerctl metadata available: Yes");
+                var trackInfo = ParseTrackInfo(playerMetadata);
+                Console.WriteLine($"Parsed track: '{trackInfo}'");
+            }
+            else
+            {
+                Console.WriteLine("Playerctl metadata available: No");
+            }
         }
 
-        public void Dispose()
+        public async Task TestCommentAsync()
         {
-            if (_disposed) return;
+            if (!_deviceSessions.Any())
+            {
+                Console.WriteLine("No active device sessions. Connect a device first.");
+                return;
+            }
             
-            StopMonitoring();
-            _monitoringCancellation?.Dispose();
-            _httpClient?.Dispose();
+            var session = _deviceSessions.Values.First();
+            Console.WriteLine($"Generating test comment for {session.DeviceName}...");
             
-            _disposed = true;
+            // Force comment generation by bypassing throttle
+            session.LastCommentTime = DateTime.MinValue;
+            
+            await GenerateCommentForDeviceAsync(session.DeviceAddress, 
+                "Generate a snarky comment about someone testing the AI commentary system of their Bluetooth speaker.");
         }
+
+        // ...existing code...
     }
 }

@@ -51,6 +51,7 @@
                 Console.WriteLine("Commands:");
                 Console.WriteLine("  'quit' or 'exit' - Stop the application");
                 Console.WriteLine("  'status' - Show current status");
+                Console.WriteLine("  'test' - Generate a test comment");
                 Console.WriteLine("  'speech on/off' - Toggle speech");
                 Console.WriteLine("\nConnect your phone and start playing music to hear my commentary...\n");
                 
@@ -63,6 +64,11 @@
                     {
                         case "status":
                             Console.WriteLine("Bluetooth Speaker is running and monitoring for music...");
+                            await monitor.ShowStatusAsync();
+                            break;
+                        case "test":
+                            Console.WriteLine("Generating test comment...");
+                            await monitor.TestCommentAsync();
                             break;
                         case "quit":
                         case "exit":
@@ -71,7 +77,7 @@
                         case "":
                             break;
                         default:
-                            Console.WriteLine("Unknown command. Type 'quit' to exit or 'status' for status.");
+                            Console.WriteLine("Unknown command. Type 'quit' to exit, 'status' for status, or 'test' for test comment.");
                             break;
                     }
                 }
