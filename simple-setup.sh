@@ -91,8 +91,10 @@ sudo bluetoothctl system-alias 'The Little Shit'
 sudo bluetoothctl discoverable on
 sudo bluetoothctl pairable on
 
-# Create systemd service for the Bluetooth speaker program
-echo "🤖 Setting up auto-start service..."
+# Get the current user (who ran the script with sudo)
+ACTUAL_USER=${SUDO_USER:-$(whoami)}
+echo "🤖 Setting up auto-start service for user: $ACTUAL_USER..."
+
 sudo tee /etc/systemd/system/bluetooth-speaker.service > /dev/null << EOF
 [Unit]
 Description=Bluetooth Speaker with AI Commentary
@@ -103,10 +105,10 @@ StartLimitBurst=3
 
 [Service]
 Type=simple
-User=pi
-Group=pi
-WorkingDirectory=/home/pi/BluetoothSpeaker
-ExecStart=/usr/bin/dotnet run --project /home/pi/BluetoothSpeaker/BluetoothSpeaker.csproj
+User=$ACTUAL_USER
+Group=$ACTUAL_USER
+WorkingDirectory=/home/$ACTUAL_USER/BluetoothSpeaker
+ExecStart=/usr/bin/dotnet run --project /home/$ACTUAL_USER/BluetoothSpeaker/BluetoothSpeaker.csproj
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -120,12 +122,12 @@ Environment=DOTNET_CLI_TELEMETRY_OPTOUT=1
 WantedBy=multi-user.target
 EOF
 
-# Copy project files to /home/pi/BluetoothSpeaker
+# Copy project files to /home/$ACTUAL_USER/BluetoothSpeaker
 echo "📁 Copying project files..."
-sudo mkdir -p /home/pi/BluetoothSpeaker
-sudo cp -r . /home/pi/BluetoothSpeaker/
-sudo chown -R pi:pi /home/pi/BluetoothSpeaker
-sudo chmod +x /home/pi/BluetoothSpeaker/speaker-control.sh
+sudo mkdir -p /home/$ACTUAL_USER/BluetoothSpeaker
+sudo cp -r . /home/$ACTUAL_USER/BluetoothSpeaker/
+sudo chown -R $ACTUAL_USER:$ACTUAL_USER /home/$ACTUAL_USER/BluetoothSpeaker
+sudo chmod +x /home/$ACTUAL_USER/BluetoothSpeaker/speaker-control.sh
 
 # Enable the service
 echo "🚀 Enabling auto-start service..."
