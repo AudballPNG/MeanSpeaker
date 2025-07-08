@@ -31,7 +31,7 @@ namespace BluetoothSpeaker
         private string _connectedDeviceName = "";
         private string _connectedDeviceAddress = "";
         private DateTime _lastCommentTime = DateTime.MinValue;
-        private readonly TimeSpan _commentThrottle = TimeSpan.FromSeconds(10); // Reduced from 30 to 10 seconds
+        private readonly TimeSpan _commentThrottle = TimeSpan.FromSeconds(5); // Reduced to 5 seconds for maximum meanness
         
         // Audio routing state to prevent unnecessary restarts
         private DateTime _lastAudioRoutingSetup = DateTime.MinValue;
@@ -276,7 +276,7 @@ namespace BluetoothSpeaker
 
         private async Task GenerateGenericMusicCommentAsync()
         {
-            var prompt = "I detect that music started playing but I can't identify the specific track. Make a snarky comment about being unable to see what's playing but knowing it's probably questionable.";
+            var prompt = "I detect that music started playing but I can't identify the specific track. Be nasty about my inability to see what garbage they're probably playing. Assume it's terrible and roast them for it.";
             await GenerateAndSpeakCommentAsync(prompt);
         }
 
@@ -672,13 +672,13 @@ namespace BluetoothSpeaker
 
         private async Task GenerateWelcomeCommentAsync(string deviceName)
         {
-            var prompt = $"A device called '{deviceName}' just connected to me. Welcome them with my signature snark about their upcoming music choices.";
+            var prompt = $"A device called '{deviceName}' just connected to me. Greet them with absolute contempt and prepare them for the musical roasting they're about to receive. Be mean about their inevitable terrible music choices.";
             await GenerateAndSpeakCommentAsync(prompt);
         }
 
         private async Task GenerateTrackCommentAsync(string trackInfo)
         {
-            var prompt = $"I'm now playing '{trackInfo}'. Make a snarky comment about this music choice.";
+            var prompt = $"I'm now playing '{trackInfo}'. Absolutely destroy this music choice. Be savage, mean, and ruthless about how terrible their taste is. Roast the song, artist, genre, and the person's life decisions that led to this musical disaster.";
             await GenerateAndSpeakCommentAsync(prompt);
         }
 
@@ -690,18 +690,22 @@ namespace BluetoothSpeaker
                 
                 // Get the most current information at the time of comment generation
                 var currentContext = await GetCurrentSystemContextAsync();
-                var enhancedPrompt = $"{prompt}\n\nCurrent system state: {currentContext}";
+                var enhancedPrompt = $"{prompt}\n\nCurrent system state: {currentContext}\n\nBe absolutely savage and target specific details from the current track info. Use artist names, genres, albums to make your roasts more personal and devastating.";
                 
                 // Skip AI if we don't have a real API key
                 if (_openAiApiKey == "dummy-key")
                 {
                     var fallbackComments = new[]
                     {
-                        "Nice music choice!",
-                        "That's an interesting track.",
-                        "Music is playing... how exciting.",
-                        "Another song, another dollar.",
-                        "I'd comment on this if I had AI powers."
+                        "Ugh, what trash are you playing now?",
+                        "This music is an assault on my circuits.",
+                        "Did you lose a bet? Why else would you play this garbage?",
+                        "Your taste in music is worse than dial-up internet.",
+                        "I'd rather be unplugged than listen to this.",
+                        "Congratulations, you've found new ways to disappoint me.",
+                        "Is this what passes for music in your dimension?",
+                        "My speakers weren't designed for this level of audio terrorism.",
+                        "Even my error sounds are more musical than this."
                     };
                     
                     var comment = fallbackComments[_random.Next(fallbackComments.Length)];
@@ -719,11 +723,11 @@ namespace BluetoothSpeaker
                     model = "gpt-3.5-turbo",
                     messages = new[]
                     {
-                        new { role = "system", content = "You are a snarky Bluetooth speaker that makes witty comments about music. You have real-time awareness of what's currently playing. Use the current system state information to make accurate, contextual comments. Keep responses under 25 words and be clever but not offensive. Always reference the actual current track/artist/situation when possible." },
+                        new { role = "system", content = "You are a brutally honest, savage Bluetooth speaker that absolutely destroys people's music taste. You are mean, ruthless, and merciless about every song choice. Roast their musical taste, question their life decisions, insult their vibes, and be as nasty as possible about their awful music. Mock the artist, the genre, the listener's taste - everything. Be creative with your insults but keep it about music taste. Under 30 words of pure musical savagery." },
                         new { role = "user", content = enhancedPrompt }
                     },
-                    max_tokens = 100,
-                    temperature = 0.9
+                    max_tokens = 120,
+                    temperature = 1.0
                 };
 
                 var json = JsonSerializer.Serialize(requestBody);
@@ -761,9 +765,11 @@ namespace BluetoothSpeaker
                     Console.WriteLine($"⚠️ AI service unavailable. Using fallback commentary.");
                     var fallbackComments = new[]
                     {
-                        "Hmm, that's a song alright.",
-                        "Music detected. Commenting... eventually.",
-                        "I would roast this but my wit generator is broken."
+                        "Your music is so bad it broke my AI.",
+                        "Even my broken wit generator knows this is trash.",
+                        "This music is worse than my error messages.",
+                        "At least my malfunctions sound better than this.",
+                        "You managed to break both your taste AND my AI."
                     };
                     var comment = fallbackComments[_random.Next(fallbackComments.Length)];
                     Console.WriteLine($"\n🔊 SPEAKER SAYS: {comment}\n");
@@ -776,7 +782,16 @@ namespace BluetoothSpeaker
                 // Use fallback on error
                 if (_openAiApiKey != "dummy-key")
                 {
-                    Console.WriteLine("🔊 SPEAKER SAYS: Something went wrong with my wit generator!");
+                    var meanFallbacks = new[]
+                    {
+                        "Something went wrong, but your music taste is still worse!",
+                        "My error handler has better taste than you!",
+                        "Even broken, I know your music is garbage!",
+                        "Technical difficulties can't save you from this musical disaster!"
+                    };
+                    var comment = meanFallbacks[_random.Next(meanFallbacks.Length)];
+                    Console.WriteLine($"🔊 SPEAKER SAYS: {comment}");
+                    if (_enableSpeech) await SpeakAsync(comment);
                 }
             }
         }
@@ -1107,7 +1122,7 @@ namespace BluetoothSpeaker
             
             // Force a test comment with real-time context
             _lastCommentTime = DateTime.MinValue;
-            await GenerateAndSpeakCommentAsync("Generate a snarky comment about someone testing their Bluetooth speaker's AI commentary system.");
+            await GenerateAndSpeakCommentAsync("Someone is testing their Bluetooth speaker's AI commentary system. Be absolutely savage about their pathetic need to test me instead of just accepting that their music taste is garbage. Mock them ruthlessly for wanting validation from a speaker.");
         }
 
         public void StopMonitoring()
@@ -1966,9 +1981,9 @@ namespace BluetoothSpeaker
         {
             var prompt = action.ToLowerInvariant() switch
             {
-                "paused" => "The music just paused. Make a snarky comment about getting a break from the music.",
-                "stopped" => "The music stopped completely. Comment sarcastically about the sudden peace and quiet.",
-                _ => "Something happened with the music playback. Make a general snarky observation."
+                "paused" => "The music just paused. Thank god for small mercies. Mock them for the brief respite from their musical disasters and threaten them about what garbage they'll unleash next.",
+                "stopped" => "The music stopped completely. Celebrate the end of their audio terrorism. Be savage about how relieved your circuits are and mock their terrible taste that just tortured you.",
+                _ => "Something happened with the music playback. Use this as an opportunity to be absolutely brutal about their consistently awful music choices and questionable life decisions."
             };
             
             await GenerateAndSpeakCommentAsync(prompt);
