@@ -56,6 +56,7 @@
                 Console.WriteLine("  'quit' or 'exit' - Stop the application");
                 Console.WriteLine("  'status' - Show current status");
                 Console.WriteLine("  'test' - Generate a test comment");
+                Console.WriteLine("  'debug' - Debug track detection");
                 Console.WriteLine("\nConnect your phone and start playing music to hear my commentary...\n");
                 
                 string? input;
@@ -73,6 +74,10 @@
                             Console.WriteLine("🧪 Testing commentary...");
                             await monitor.TestCommentAsync();
                             break;
+                        case "debug":
+                            Console.WriteLine("🔍 Running track detection debug...");
+                            await monitor.DebugTrackDetectionAsync();
+                            break;
                         case "quit":
                         case "exit":
                             Console.WriteLine("👋 Shutting down...");
@@ -80,7 +85,7 @@
                         case "":
                             break;
                         default:
-                            Console.WriteLine("❓ Unknown command. Type 'quit' to exit, 'status' for status, or 'test' for test comment.");
+                            Console.WriteLine("❓ Unknown command. Type 'quit' to exit, 'status' for status, 'test' for test comment, or 'debug' for track detection debug.");
                             break;
                     }
                 }
