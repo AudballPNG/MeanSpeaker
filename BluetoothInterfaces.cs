@@ -102,29 +102,50 @@ namespace BluetoothSpeaker
             this IObjectManager objectManager)
         {
             var result = new List<(IDevice1, ObjectPath, string, string)>();
-            var objects = await objectManager.GetManagedObjectsAsync();
             
-            foreach (var obj in objects)
+            try
             {
-                if (obj.Value.TryGetValue("org.bluez.Device1", out var deviceProps))
+                var objects = await objectManager.GetManagedObjectsAsync();
+                Console.WriteLine($"[DEBUG] GetManagedObjects returned {objects.Count} objects");
+                
+                foreach (var obj in objects)
                 {
-                    if (deviceProps.TryGetValue("Connected", out var connectedObj) && connectedObj is bool connected && connected)
+                    if (obj.Value.TryGetValue("org.bluez.Device1", out var deviceProps))
                     {
-                        var device = Connection.System.CreateProxy<IDevice1>("org.bluez", obj.Key);
-                        string address = string.Empty;
-                        string name = string.Empty;
+                        Console.WriteLine($"[DEBUG] Checking device: {obj.Key}");
                         
-                        if (deviceProps.TryGetValue("Address", out var addrObj) && addrObj is string)
-                            address = (string)addrObj;
+                        // Check if device is connected
+                        bool connected = false;
+                        if (deviceProps.TryGetValue("Connected", out var connectedObj))
+                        {
+                            connected = connectedObj is bool c && c;
+                            Console.WriteLine($"[DEBUG] Device connected status: {connected}");
+                        }
+                        
+                        if (connected)
+                        {
+                            var device = Connection.System.CreateProxy<IDevice1>("org.bluez", obj.Key);
+                            string address = string.Empty;
+                            string name = string.Empty;
                             
-                        if (deviceProps.TryGetValue("Name", out var nameObj) && nameObj is string)
-                            name = (string)nameObj;
-                        else if (deviceProps.TryGetValue("Alias", out var aliasObj) && aliasObj is string)
-                            name = (string)aliasObj;
+                            if (deviceProps.TryGetValue("Address", out var addrObj) && addrObj is string)
+                                address = (string)addrObj;
+                                
+                            if (deviceProps.TryGetValue("Name", out var nameObj) && nameObj is string)
+                                name = (string)nameObj;
+                            else if (deviceProps.TryGetValue("Alias", out var aliasObj) && aliasObj is string)
+                                name = (string)aliasObj;
                             
-                        result.Add((device, obj.Key, address, name));
+                            Console.WriteLine($"[DEBUG] Adding connected device: {name} ({address})");
+                            result.Add((device, obj.Key, address, name));
+                        }
                     }
                 }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ERROR] Failed to get connected devices: {ex.Message}");
+                throw;
             }
             
             return result;

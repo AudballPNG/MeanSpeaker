@@ -18,7 +18,7 @@
                 }
             }
             
-            Console.WriteLine("🎵 Snarky Bluetooth Speaker Starting Up...");
+            Console.WriteLine("🎵 Simple Snarky Bluetooth Speaker Starting Up...");
             Console.WriteLine($"Speech: {(enableSpeech ? "Enabled" : "Disabled")}");
             if (enableSpeech)
             {
@@ -47,12 +47,11 @@
                 await monitor.InitializeAsync();
                 await monitor.StartMonitoringAsync();
                 
-                Console.WriteLine("\nBluetooth Speaker is running!");
+                Console.WriteLine("\n🎵 Simple Bluetooth Speaker is running!");
                 Console.WriteLine("Commands:");
                 Console.WriteLine("  'quit' or 'exit' - Stop the application");
                 Console.WriteLine("  'status' - Show current status");
                 Console.WriteLine("  'test' - Generate a test comment");
-                Console.WriteLine("  'speech on/off' - Toggle speech");
                 Console.WriteLine("\nConnect your phone and start playing music to hear my commentary...\n");
                 
                 string? input;
@@ -63,21 +62,21 @@
                     switch (input)
                     {
                         case "status":
-                            Console.WriteLine("Bluetooth Speaker is running and monitoring for music...");
+                            Console.WriteLine("📊 Checking status...");
                             await monitor.ShowStatusAsync();
                             break;
                         case "test":
-                            Console.WriteLine("Generating test comment...");
+                            Console.WriteLine("🧪 Testing commentary...");
                             await monitor.TestCommentAsync();
                             break;
                         case "quit":
                         case "exit":
-                            Console.WriteLine("Shutting down...");
+                            Console.WriteLine("👋 Shutting down...");
                             break;
                         case "":
                             break;
                         default:
-                            Console.WriteLine("Unknown command. Type 'quit' to exit, 'status' for status, or 'test' for test comment.");
+                            Console.WriteLine("❓ Unknown command. Type 'quit' to exit, 'status' for status, or 'test' for test comment.");
                             break;
                     }
                 }
@@ -85,7 +84,7 @@
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error: {ex.Message}");
+                Console.WriteLine($"❌ Error: {ex.Message}");
                 Console.WriteLine("Make sure you're running this on a Linux system with Bluetooth support.");
             }
             finally
@@ -93,7 +92,7 @@
                 monitor.StopMonitoring();
             }
             
-            Console.WriteLine("Goodbye! Thanks for letting me judge your music taste! 🎵");
+            Console.WriteLine("👋 Goodbye! Thanks for letting me judge your music taste! 🎵");
         }
     }
 }

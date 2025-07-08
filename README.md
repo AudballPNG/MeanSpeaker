@@ -1,61 +1,31 @@
-# Snarky Bluetooth Speaker
+# Simple Snarky Bluetooth Speaker
 
-A Raspberry Pi Bluetooth speaker that not only plays your music but also provides snarky AI commentary about your music choices using OpenAI's GPT.
+A Raspberry Pi Bluetooth speaker that plays your music AND provides snarky AI commentary about your music choices using OpenAI's GPT.
 
 ## Features
 
-- **Bluetooth A2DP Audio Sink**: Receives audio from phones, tablets, and other Bluetooth devices
-- **AI Music Commentary**: Uses OpenAI GPT to generate witty, sarcastic comments about your music
-- **Text-to-Speech**: Actually speaks the commentary out loud using espeak
-- **Voice Options**: Multiple voice options for different personalities
-- **Automatic Setup**: Installs and configures all necessary Bluetooth components
-- **Cross-Device Compatibility**: Works with iOS, Android, and other Bluetooth audio sources
-- **Real-time Monitoring**: Tracks music playback, track changes, and device connections
+- **🎵 Bluetooth A2DP Audio Sink**: Works like any normal Bluetooth speaker
+- **🤖 AI Music Commentary**: Uses OpenAI GPT to generate witty, sarcastic comments about your music
+- **🔊 Text-to-Speech**: Actually speaks the commentary out loud using espeak
+- **📱 Simple Setup**: One script setup, no complex configuration
+- **🔧 Reliable**: Uses proven command-line tools, not complex D-Bus event systems
 
-## Requirements
+## How It Works
 
-### Hardware
-- Raspberry Pi (3B+ or newer recommended)
-- USB speakers or 3.5mm audio output
-- Bluetooth adapter (built-in on most Pi models)
-- SD card with Raspberry Pi OS
-
-### Software
-- .NET 8 SDK
-- OpenAI API key
-- Internet connection for AI commentary
-
-## Installation
-
-### Quick Start (Recommended)
-
-The easiest way to get started is with the all-in-one script:
-
-```bash
-git clone <your-repo-url>
-cd BluetoothSpeaker
-chmod +x run-on-pi.sh
-sudo ./run-on-pi.sh
+**Like a normal Bluetooth speaker:**
+```
+Phone → Bluetooth → BlueALSA → Speakers
 ```
 
-This script will:
-- Install all dependencies
-- Configure Bluetooth and audio services
-- Set up the pairing agent
-- Build and run the application
-- Optionally set up auto-start on boot
+**Plus AI commentary:**
+```
+playerctl → Track Detection → AI Commentary → Text-to-Speech → Speakers
+```
 
-### Manual Installation
+## Quick Setup
 
-If you prefer to install dependencies manually:
-
-### 1. Prepare Raspberry Pi
-
+### 1. Install .NET 8 on Raspberry Pi
 ```bash
-# Update your Pi
-sudo apt update && sudo apt upgrade -y
-
-# Install .NET 8
 wget https://dot.net/v1/dotnet-install.sh
 chmod +x dotnet-install.sh
 ./dotnet-install.sh --channel 8.0
@@ -63,40 +33,101 @@ echo 'export PATH=$PATH:$HOME/.dotnet' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-### 2. Clone and Build
-
+### 2. Clone and Setup
 ```bash
 git clone <your-repo-url>
 cd BluetoothSpeaker
-dotnet build
+chmod +x simple-setup.sh
+sudo ./simple-setup.sh
 ```
 
-### 3. Set Up OpenAI API Key
-
-Option 1 - Environment Variable:
+### 3. Set OpenAI API Key
 ```bash
 export OPENAI_API_KEY="your-api-key-here"
 echo 'export OPENAI_API_KEY="your-api-key-here"' >> ~/.bashrc
 ```
 
-Option 2 - The application will prompt you for the key when you run it.
-
-### 4. Run the Application
-
+### 4. Run the Speaker
 ```bash
-sudo ./run-on-pi.sh
+dotnet run
 ```
 
-Note: `sudo` is required for Bluetooth system configuration on first run.
+That's it! Your Pi is now discoverable as "The Little Shit".
 
-### Audio Issues?
+## Usage
 
-If you connect but no audio plays through the speaker (stays on your phone):
+1. **Connect your phone** to "The Little Shit" via Bluetooth
+2. **Play music** - it works like any normal Bluetooth speaker
+3. **Listen to the roasts** - the AI will occasionally comment on your music choices
 
-1. **Run the setup script again**:
-   ```bash
-   sudo ./run-on-pi.sh
-   ```
+### Commands
+While the app is running, you can type:
+- `status` - Show connection and service status
+- `test` - Force generate a test comment
+- `quit` - Stop the application
+
+## Troubleshooting
+
+### No Audio Playing
+```bash
+# Check services
+sudo systemctl status bluealsa bluealsa-aplay
+
+# Restart if needed
+sudo systemctl restart bluealsa-aplay
+```
+
+### No Device Detection
+```bash
+# Check Bluetooth
+bluetoothctl devices Connected
+bluetoothctl show
+```
+
+### No Track Detection
+```bash
+# Check playerctl
+playerctl status
+playerctl metadata
+```
+
+## How It's Different
+
+**Normal Bluetooth speakers:** Just play audio
+**This speaker:** Plays audio + judges your music taste
+
+**Complex implementations:** Use D-Bus events, complex state management, etc.
+**This implementation:** Simple 2-second polling like normal media players
+
+## Architecture
+
+- **🎵 MusicMonitor**: Single class that handles everything
+- **📱 Device Detection**: `bluetoothctl devices Connected` every 2 seconds
+- **🎧 Track Detection**: `playerctl metadata` every 2 seconds  
+- **🤖 AI Commentary**: OpenAI GPT-3.5-turbo with snarky prompts
+- **🔊 Text-to-Speech**: espeak with configurable voices
+
+**Total complexity:** ~500 lines of C# vs 1500+ lines in the old version
+
+## Voice Options
+
+```bash
+# Different voice personalities
+dotnet run --voice en+f3  # Default female
+dotnet run --voice en+m3  # Male voice
+dotnet run --voice en+f4  # Different female
+dotnet run --no-speech    # Text only, no speech
+```
+
+## Why This Approach Works
+
+1. **🎯 Simple**: Uses the same tools normal media players use
+2. **🔧 Reliable**: Command-line tools are battle-tested
+3. **🚀 Fast**: No complex event systems or D-Bus watchers
+4. **📊 Debuggable**: Easy to see what's happening
+5. **🎵 Normal**: Works exactly like a regular Bluetooth speaker with added AI
+
+The key insight: **You don't need complex event systems to detect music changes.** Just poll the same tools that media players use!
 
 2. **Or use the built-in audio fix**:
    ```bash

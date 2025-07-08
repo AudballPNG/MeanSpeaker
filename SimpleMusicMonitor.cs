@@ -9,10 +9,11 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Tmds.DBus;
 
 namespace BluetoothSpeaker
 {
-    public class MusicMonitor : IDisposable
+    public class SimpleMusicMonitor : IDisposable
     {
         private readonly string _openAiApiKey;
         private readonly HttpClient _httpClient;
@@ -30,7 +31,7 @@ namespace BluetoothSpeaker
         private CancellationTokenSource? _monitoringCancellation;
         private bool _disposed = false;
 
-        public MusicMonitor(string openAiApiKey, bool enableSpeech = true, string ttsVoice = "en+f3")
+        public SimpleMusicMonitor(string openAiApiKey, bool enableSpeech = true, string ttsVoice = "en+f3")
         {
             _openAiApiKey = openAiApiKey ?? throw new ArgumentNullException(nameof(openAiApiKey));
             _httpClient = new HttpClient();
