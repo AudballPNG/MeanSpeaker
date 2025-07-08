@@ -14,9 +14,12 @@ sudo apt-get install -y \
     bluez \
     bluez-tools \
     bluealsa \
+    bluealsa-aplay \
     alsa-utils \
     playerctl \
-    espeak
+    espeak \
+    pulseaudio \
+    pulseaudio-module-bluetooth
 
 # Enable and start Bluetooth
 echo "🔵 Configuring Bluetooth..."
@@ -63,7 +66,7 @@ Requires=bluealsa.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/bluealsa-aplay --pcm-buffer-time=250000 00:00:00:00:00:00
+ExecStart=/usr/bin/bluealsa-aplay --pcm-buffer-time=250000
 Restart=on-failure
 RestartSec=5
 
@@ -74,15 +77,82 @@ EOF
 # Enable and start services
 echo "🚀 Starting services..."
 sudo systemctl daemon-reload
+sudo systemctl enable bluetooth
+sudo systemctl start bluetooth
 sudo systemctl enable bluealsa
 sudo systemctl start bluealsa
 sudo systemctl enable bluealsa-aplay
 sudo systemctl start bluealsa-aplay
 
+# Create dynamic audio routing script
+echo "🔊 Creating dynamic audio routing script..."
+sudo tee /usr/local/bin/route-bluetooth-audio.sh > /dev/null << 'EOF'
+#!/bin/bash
+# Dynamic Bluetooth audio routing script
+
+# Kill any existing bluealsa-aplay processes
+sudo pkill -f bluealsa-aplay
+
+# Wait a moment
+sleep 2
+
+# Get connected A2DP devices
+DEVICES=$(bluetoothctl devices Connected | grep -v "^$")
+
+if [ -n "$DEVICES" ]; then
+    echo "Found connected devices, starting audio routing..."
+    
+    # Start bluealsa-aplay for all connected devices
+    /usr/bin/bluealsa-aplay --pcm-buffer-time=250000 &
+    
+    # Also try device-specific routing
+    while IFS= read -r line; do
+        if [[ $line =~ Device\ ([0-9A-Fa-f:]{17}) ]]; then
+            MAC="${BASH_REMATCH[1]}"
+            echo "Routing audio for device: $MAC"
+            /usr/bin/bluealsa-aplay --pcm-buffer-time=250000 "$MAC" &
+        fi
+    done <<< "$DEVICES"
+    
+    echo "Audio routing started for connected devices"
+else
+    echo "No connected devices found"
+fi
+EOF
+
+sudo chmod +x /usr/local/bin/route-bluetooth-audio.sh
+
 # Set audio levels
 echo "🔊 Setting audio levels..."
 sudo amixer sset Master,0 90% 2>/dev/null || true
 sudo amixer sset PCM,0 90% 2>/dev/null || true
+sudo amixer sset Headphone,0 90% 2>/dev/null || true
+
+# Configure audio for BlueALSA
+echo "🎧 Configuring audio system..."
+# Add current user to audio group if not already
+sudo usermod -a -G audio ${SUDO_USER:-$(whoami)} 2>/dev/null || true
+
+# Ensure ALSA config allows software mixing
+sudo tee /etc/asound.conf > /dev/null << 'EOF'
+defaults.pcm.card 0
+defaults.pcm.device 0
+defaults.ctl.card 0
+
+pcm.!default {
+    type pulse
+    fallback "sysdefault"
+    hint {
+        show on
+        description "Default ALSA Output (currently PulseAudio Sound Server)"
+    }
+}
+
+ctl.!default {
+    type pulse
+    fallback "sysdefault"
+}
+EOF
 
 # Make Bluetooth discoverable
 echo "📡 Making Bluetooth discoverable..."

@@ -128,8 +128,12 @@ namespace BluetoothSpeaker
                                     _connectedDeviceAddress = address;
                                     _connectedDeviceName = name;
                                     
-                                    // Ensure audio routing is ready
+                                    // Immediately set up audio routing for this device
+                                    Console.WriteLine("🔊 Setting up audio routing for new device...");
                                     await EnsureAudioRoutingAsync();
+                                    
+                                    // Verify the device supports A2DP
+                                    await VerifyA2DPConnectionAsync(address);
                                     
                                     // Welcome message
                                     await GenerateWelcomeCommentAsync(name);
@@ -140,7 +144,7 @@ namespace BluetoothSpeaker
                     }
                 }
                 
-                // Alternative method: Check if any A2DP devices are connected via BlueALSA
+                // Method 2: Check if any A2DP devices are connected via BlueALSA
                 var blualsaDevices = await RunCommandWithOutputAsync("bluealsa-aplay", "-l");
                 if (!string.IsNullOrEmpty(blualsaDevices) && blualsaDevices.Contains("A2DP"))
                 {
@@ -149,6 +153,15 @@ namespace BluetoothSpeaker
                         Console.WriteLine("📱 A2DP device detected via BlueALSA");
                         _connectedDeviceAddress = "detected";
                         _connectedDeviceName = "Bluetooth Device";
+                        
+                        // Try to parse the actual MAC address from bluealsa-aplay output
+                        var mac = ParseMacFromBlueALSAOutput(blualsaDevices);
+                        if (!string.IsNullOrEmpty(mac))
+                        {
+                            _connectedDeviceAddress = mac;
+                            Console.WriteLine($"📱 Detected device MAC: {mac}");
+                        }
+                        
                         await EnsureAudioRoutingAsync();
                         await GenerateWelcomeCommentAsync(_connectedDeviceName);
                     }
@@ -170,13 +183,86 @@ namespace BluetoothSpeaker
             }
         }
 
+        private async Task VerifyA2DPConnectionAsync(string deviceAddress)
+        {
+            try
+            {
+                Console.WriteLine($"🔍 Verifying A2DP connection for {deviceAddress}...");
+                
+                // Check if device has A2DP profile connected
+                var deviceInfo = await RunCommandWithOutputAsync("bluetoothctl", "info " + deviceAddress);
+                
+                if (deviceInfo.Contains("A2DP Sink") || deviceInfo.Contains("Advanced Audio"))
+                {
+                    Console.WriteLine("✅ A2DP connection verified");
+                    
+                    // Make sure BlueALSA is aware of this device
+                    await Task.Delay(2000); // Give BlueALSA time to register the device
+                    
+                    // Force audio routing setup
+                    await EnsureAudioRoutingAsync();
+                }
+                else
+                {
+                    Console.WriteLine("⚠️ Device connected but A2DP not detected. Audio may not work.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ Error verifying A2DP: {ex.Message}");
+            }
+        }
+
+        private string ParseMacFromBlueALSAOutput(string output)
+        {
+            try
+            {
+                // Parse MAC address from bluealsa-aplay -l output
+                // Look for patterns like "hci0:XX:XX:XX:XX:XX:XX"
+                var lines = output.Split('\n');
+                foreach (var line in lines)
+                {
+                    if (line.Contains("A2DP"))
+                    {
+                        var macMatch = System.Text.RegularExpressions.Regex.Match(line, @"([0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2})");
+                        if (macMatch.Success)
+                        {
+                            return macMatch.Groups[1].Value;
+                        }
+                    }
+                }
+                return "";
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
         private async Task CheckCurrentTrackAsync()
         {
             try
             {
-                // Method 1: Try playerctl (most reliable for track info)
-                var metadata = await RunCommandWithOutputAsync("playerctl", "metadata");
+                // Method 1: Try BlueALSA metadata (most direct for Bluetooth)
+                var blualsaMetadata = await GetBlueALSAMetadataAsync();
+                if (!string.IsNullOrEmpty(blualsaMetadata) && blualsaMetadata != _currentTrack)
+                {
+                    Console.WriteLine($"🎵 Now playing: {blualsaMetadata}");
+                    _currentTrack = blualsaMetadata;
+                    
+                    // Ensure audio routing is working
+                    await EnsureAudioRoutingAsync();
+                    
+                    // Generate AI commentary
+                    if (ShouldGenerateComment())
+                    {
+                        await GenerateTrackCommentAsync(blualsaMetadata);
+                    }
+                    return;
+                }
                 
+                // Method 2: Try playerctl (works for some devices)
+                var metadata = await RunCommandWithOutputAsync("playerctl", "metadata");
                 if (!string.IsNullOrEmpty(metadata))
                 {
                     var trackInfo = ParseTrackInfo(metadata);
@@ -198,23 +284,26 @@ namespace BluetoothSpeaker
                     return;
                 }
                 
-                // Method 2: Try bluetoothctl as fallback
-                var playerInfo = await RunCommandWithOutputAsync("bluetoothctl", "info " + _connectedDeviceAddress);
-                if (!string.IsNullOrEmpty(playerInfo))
+                // Method 3: Try bluetoothctl as fallback
+                if (!string.IsNullOrEmpty(_connectedDeviceAddress) && _connectedDeviceAddress != "detected")
                 {
-                    var trackInfo = ParseBluetoothctlTrackInfo(playerInfo);
-                    
-                    if (!string.IsNullOrEmpty(trackInfo) && trackInfo != _currentTrack)
+                    var playerInfo = await RunCommandWithOutputAsync("bluetoothctl", "info " + _connectedDeviceAddress);
+                    if (!string.IsNullOrEmpty(playerInfo))
                     {
-                        Console.WriteLine($"🎵 Now playing: {trackInfo}");
-                        _currentTrack = trackInfo;
+                        var trackInfo = ParseBluetoothctlTrackInfo(playerInfo);
                         
-                        // Ensure audio routing is working
-                        await EnsureAudioRoutingAsync();
-                        
-                        if (ShouldGenerateComment())
+                        if (!string.IsNullOrEmpty(trackInfo) && trackInfo != _currentTrack)
                         {
-                            await GenerateTrackCommentAsync(trackInfo);
+                            Console.WriteLine($"🎵 Now playing: {trackInfo}");
+                            _currentTrack = trackInfo;
+                            
+                            // Ensure audio routing is working
+                            await EnsureAudioRoutingAsync();
+                            
+                            if (ShouldGenerateComment())
+                            {
+                                await GenerateTrackCommentAsync(trackInfo);
+                            }
                         }
                     }
                 }
@@ -229,17 +318,46 @@ namespace BluetoothSpeaker
         {
             try
             {
-                // Check if bluealsa-aplay is running
+                Console.WriteLine("🔧 Ensuring audio routing is active...");
+                
+                // Method 1: Check if bluealsa-aplay is running and restart if needed
                 var status = await RunCommandWithOutputAsync("systemctl", "is-active bluealsa-aplay");
                 if (status.Trim() != "active")
                 {
-                    Console.WriteLine("🔧 Restarting audio routing...");
+                    Console.WriteLine("🔧 Restarting bluealsa-aplay service...");
                     await RunCommandSilentlyAsync("systemctl", "restart bluealsa-aplay");
+                    await Task.Delay(2000); // Give it time to start
                 }
+                
+                // Method 2: Use our dynamic routing script if available
+                if (File.Exists("/usr/local/bin/route-bluetooth-audio.sh"))
+                {
+                    Console.WriteLine("🔧 Running dynamic audio routing...");
+                    await RunCommandSilentlyAsync("/usr/local/bin/route-bluetooth-audio.sh", "");
+                }
+                
+                // Method 3: Direct bluealsa-aplay for connected device if we have one
+                if (!string.IsNullOrEmpty(_connectedDeviceAddress) && _connectedDeviceAddress != "detected")
+                {
+                    Console.WriteLine($"🔧 Starting direct audio routing for {_connectedDeviceAddress}...");
+                    
+                    // Kill existing processes first
+                    await RunCommandSilentlyAsync("pkill", "-f 'bluealsa-aplay.*" + _connectedDeviceAddress + "'");
+                    await Task.Delay(1000);
+                    
+                    // Start new process for this device
+                    _ = Task.Run(async () =>
+                    {
+                        await RunCommandAsync("bluealsa-aplay", $"--pcm-buffer-time=250000 {_connectedDeviceAddress}");
+                    });
+                }
+                
+                Console.WriteLine("✅ Audio routing setup complete");
             }
-            catch
+            catch (Exception ex)
             {
-                // Ignore errors - audio routing is best effort
+                Console.WriteLine($"⚠️ Audio routing warning: {ex.Message}");
+                // Don't fail the entire application for audio routing issues
             }
         }
 
@@ -356,7 +474,7 @@ namespace BluetoothSpeaker
                 $"Really? '{trackInfo}'? That's what passes for music these days?",
                 $"Oh wonderful, '{trackInfo}'. Let me guess, this is your 'favorite song'?",
                 $"'{trackInfo}' - because nothing says 'good taste' like... actually, no, this doesn't say that at all.",
-                $"Playing '{trackInfo}'. Well, I've heard worse... wait, no I haven't.",
+                $"Playing '{trackInfo}'. Well, I've heard worse... wait, no, I haven't.",
                 $"'{trackInfo}' coming right up. Hope your neighbors appreciate your... unique... musical choices."
             };
             
@@ -485,91 +603,87 @@ namespace BluetoothSpeaker
         {
             try
             {
-                Console.WriteLine("🔧 Auto-configuring Bluetooth speaker (this may take a moment)...");
+                Console.WriteLine("🔧 Auto-configuring Bluetooth speaker...");
                 
-                // Step 1: Install required packages silently
-                Console.WriteLine("📦 Installing required packages...");
-                await RunCommandSilentlyAsync("apt-get", "update");
-                await RunCommandSilentlyAsync("apt-get", "install -y bluetooth bluez bluez-tools bluealsa alsa-utils playerctl espeak");
+                // Check if we're already configured by looking for our setup marker
+                if (File.Exists("/usr/local/bin/route-bluetooth-audio.sh"))
+                {
+                    Console.WriteLine("✅ System already configured by simple-setup.sh");
+                    
+                    // Just ensure services are running
+                    await RunCommandSilentlyAsync("systemctl", "start bluetooth");
+                    await RunCommandSilentlyAsync("systemctl", "start bluealsa");
+                    await RunCommandSilentlyAsync("systemctl", "start bluealsa-aplay");
+                    
+                    Console.WriteLine("✅ Services restarted and ready!");
+                    return;
+                }
                 
-                // Step 2: Configure Bluetooth main config
-                Console.WriteLine("� Configuring Bluetooth...");
-                var bluetoothConfig = @"[General]
-Name = The Little Shit
-Class = 0x240404
-DiscoverableTimeout = 0
-PairableTimeout = 0
-
-[Policy]
-AutoEnable=true";
+                // Look for simple-setup.sh script in current directory or common locations
+                string[] scriptPaths = {
+                    "./simple-setup.sh",
+                    "../simple-setup.sh", 
+                    "/home/pi/BluetoothSpeaker/simple-setup.sh",
+                    Directory.GetCurrentDirectory() + "/simple-setup.sh"
+                };
                 
-                await WriteConfigFileAsync("/etc/bluetooth/main.conf", bluetoothConfig);
+                string? setupScript = null;
+                foreach (var path in scriptPaths)
+                {
+                    if (File.Exists(path))
+                    {
+                        setupScript = Path.GetFullPath(path);
+                        break;
+                    }
+                }
                 
-                // Step 3: Create BlueALSA service
-                Console.WriteLine("🎵 Setting up BlueALSA...");
-                var blualsaService = @"[Unit]
-Description=BlueALSA service
-After=bluetooth.service
-Requires=bluetooth.service
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/bluealsa -p a2dp-sink
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target";
-                
-                await WriteConfigFileAsync("/etc/systemd/system/bluealsa.service", blualsaService);
-                
-                // Step 4: Create audio routing service (CRITICAL!)
-                Console.WriteLine("🔊 Setting up audio routing...");
-                var aplayService = @"[Unit]
-Description=BlueALSA audio routing
-After=bluealsa.service sound.target
-Requires=bluealsa.service
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/bluealsa-aplay --pcm-buffer-time=250000 00:00:00:00:00:00
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target";
-                
-                await WriteConfigFileAsync("/etc/systemd/system/bluealsa-aplay.service", aplayService);
-                
-                // Step 5: Enable and start all services
-                Console.WriteLine("🚀 Starting services...");
-                await RunCommandSilentlyAsync("systemctl", "daemon-reload");
-                await RunCommandSilentlyAsync("systemctl", "enable bluetooth");
-                await RunCommandSilentlyAsync("systemctl", "start bluetooth");
-                await RunCommandSilentlyAsync("systemctl", "enable bluealsa");
-                await RunCommandSilentlyAsync("systemctl", "start bluealsa");
-                await RunCommandSilentlyAsync("systemctl", "enable bluealsa-aplay");
-                await RunCommandSilentlyAsync("systemctl", "start bluealsa-aplay");
-                
-                // Step 6: Configure audio levels
-                Console.WriteLine("🔊 Setting audio levels...");
-                await RunCommandSilentlyAsync("amixer", "sset Master,0 90%");
-                await RunCommandSilentlyAsync("amixer", "sset PCM,0 90%");
-                
-                // Step 7: Make Bluetooth discoverable
-                Console.WriteLine("📡 Making Bluetooth discoverable...");
-                await RunCommandSilentlyAsync("bluetoothctl", "power on");
-                await RunCommandSilentlyAsync("bluetoothctl", "system-alias 'The Little Shit'");
-                await RunCommandSilentlyAsync("bluetoothctl", "discoverable on");
-                await RunCommandSilentlyAsync("bluetoothctl", "pairable on");
-                
-                Console.WriteLine("✅ Bluetooth speaker fully configured and ready!");
-                Console.WriteLine("📱 Your device should now be discoverable as 'The Little Shit'");
+                if (!string.IsNullOrEmpty(setupScript))
+                {
+                    Console.WriteLine($"🚀 Found setup script at: {setupScript}");
+                    Console.WriteLine("� Running comprehensive setup (this may take a few minutes)...");
+                    
+                    // Make sure the script is executable
+                    await RunCommandSilentlyAsync("chmod", $"+x {setupScript}");
+                    
+                    // Run the setup script
+                    await RunCommandAsync("bash", setupScript);
+                    
+                    Console.WriteLine("✅ Setup script completed!");
+                }
+                else
+                {
+                    Console.WriteLine("⚠️ simple-setup.sh not found. Doing basic setup...");
+                    Console.WriteLine("💡 For full features, run: sudo ./simple-setup.sh");
+                    
+                    // Fallback to basic setup
+                    await RunBasicSetupAsync();
+                }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"⚠️ Setup warning: {ex.Message}");
-                Console.WriteLine("Some features may not work properly. Try running with sudo if needed.");
+                Console.WriteLine("💡 Try running manually: sudo ./simple-setup.sh");
             }
+        }
+
+        private async Task RunBasicSetupAsync()
+        {
+            Console.WriteLine("📦 Installing basic packages...");
+            await RunCommandSilentlyAsync("apt-get", "update");
+            await RunCommandSilentlyAsync("apt-get", "install -y bluetooth bluez bluez-tools bluealsa alsa-utils playerctl espeak");
+            
+            Console.WriteLine("� Starting services...");
+            await RunCommandSilentlyAsync("systemctl", "enable bluetooth");
+            await RunCommandSilentlyAsync("systemctl", "start bluetooth");
+            
+            Console.WriteLine("📡 Making Bluetooth discoverable...");
+            await RunCommandSilentlyAsync("bluetoothctl", "power on");
+            await RunCommandSilentlyAsync("bluetoothctl", "system-alias 'The Little Shit'");
+            await RunCommandSilentlyAsync("bluetoothctl", "discoverable on");
+            await RunCommandSilentlyAsync("bluetoothctl", "pairable on");
+            
+            Console.WriteLine("✅ Basic setup complete!");
+            Console.WriteLine("⚠️ For full audio features, run: sudo ./simple-setup.sh");
         }
 
         private async Task WriteConfigFileAsync(string filePath, string content)
@@ -682,7 +796,7 @@ WantedBy=multi-user.target";
             Console.WriteLine($"Current Track: {(_currentTrack ?? "None")}");
             Console.WriteLine($"Last Comment: {_lastCommentTime:HH:mm:ss}");
             
-            // Quick service check
+            // Service status check
             var bluetoothStatus = await RunCommandWithOutputAsync("systemctl", "is-active bluetooth");
             var blualsaStatus = await RunCommandWithOutputAsync("systemctl", "is-active bluealsa");
             var aplayStatus = await RunCommandWithOutputAsync("systemctl", "is-active bluealsa-aplay");
@@ -695,6 +809,36 @@ WantedBy=multi-user.target";
             // Check for any connected devices
             var connectedDevices = await RunCommandWithOutputAsync("bluetoothctl", "devices Connected");
             Console.WriteLine($"\nConnected via bluetoothctl: {(!string.IsNullOrEmpty(connectedDevices?.Trim()) ? "Yes" : "No")}");
+            
+            // Check BlueALSA devices
+            var blualsaDevices = await RunCommandWithOutputAsync("bluealsa-aplay", "-l");
+            Console.WriteLine($"BlueALSA devices available: {(!string.IsNullOrEmpty(blualsaDevices?.Trim()) ? "Yes" : "No")}");
+            
+            // Check running bluealsa-aplay processes
+            var processes = await RunCommandWithOutputAsync("ps", "aux | grep bluealsa-aplay | grep -v grep");
+            Console.WriteLine($"Active bluealsa-aplay processes: {(!string.IsNullOrEmpty(processes?.Trim()) ? "Yes" : "No")}");
+            
+            // Audio system check
+            var audioDevices = await RunCommandWithOutputAsync("aplay", "-l");
+            Console.WriteLine($"Audio devices available: {(!string.IsNullOrEmpty(audioDevices?.Trim()) ? "Yes" : "No")}");
+            
+            // Show detailed info if device is connected
+            if (!string.IsNullOrEmpty(_connectedDeviceAddress) && _connectedDeviceAddress != "detected")
+            {
+                Console.WriteLine($"\n=== DEVICE DETAILS ===");
+                var deviceInfo = await RunCommandWithOutputAsync("bluetoothctl", "info " + _connectedDeviceAddress);
+                if (!string.IsNullOrEmpty(deviceInfo))
+                {
+                    var lines = deviceInfo.Split('\n');
+                    foreach (var line in lines)
+                    {
+                        if (line.Contains("A2DP") || line.Contains("Advanced Audio") || line.Contains("Connected: yes"))
+                        {
+                            Console.WriteLine($"  {line.Trim()}");
+                        }
+                    }
+                }
+            }
         }
 
         public async Task TestCommentAsync()
@@ -738,6 +882,147 @@ WantedBy=multi-user.target";
             _httpClient?.Dispose();
             
             _disposed = true;
+        }
+
+        private async Task<string> GetBlueALSAMetadataAsync()
+        {
+            try
+            {
+                // Method 1: Try dbus-send to get current metadata from BlueALSA
+                if (!string.IsNullOrEmpty(_connectedDeviceAddress) && _connectedDeviceAddress != "detected")
+                {
+                    var dbusCommand = $"dbus-send --system --print-reply --dest=org.bluealsa /org/bluealsa/hci0/dev_{_connectedDeviceAddress.Replace(":", "_")}/a2dpsink org.freedesktop.DBus.Properties.GetAll string:org.bluealsa.MediaTransport1";
+                    var dbusResult = await RunCommandWithOutputAsync("dbus-send", dbusCommand.Substring("dbus-send ".Length));
+                    
+                    if (!string.IsNullOrEmpty(dbusResult))
+                    {
+                        var metadata = ParseDBusMetadata(dbusResult);
+                        if (!string.IsNullOrEmpty(metadata))
+                        {
+                            return metadata;
+                        }
+                    }
+                }
+                
+                // Method 2: Try bluealsa-aplay list to see active streams
+                var aplayList = await RunCommandWithOutputAsync("bluealsa-aplay", "-l");
+                if (!string.IsNullOrEmpty(aplayList) && aplayList.Contains("A2DP"))
+                {
+                    // Parse device info from bluealsa-aplay list
+                    var lines = aplayList.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var line in lines)
+                    {
+                        if (line.Contains("A2DP") && line.Contains(_connectedDeviceAddress))
+                        {
+                            // Try to get metadata for this specific device
+                            var metadataCmd = $"bluetoothctl info {_connectedDeviceAddress}";
+                            var deviceInfo = await RunCommandWithOutputAsync("bluetoothctl", metadataCmd.Substring("bluetoothctl ".Length));
+                            
+                            if (!string.IsNullOrEmpty(deviceInfo))
+                            {
+                                return ParseBluetoothctlTrackInfo(deviceInfo);
+                            }
+                        }
+                    }
+                }
+                
+                // Method 3: Check if audio is playing by monitoring bluealsa-aplay processes
+                var processes = await RunCommandWithOutputAsync("ps", "aux | grep bluealsa-aplay | grep -v grep");
+                if (!string.IsNullOrEmpty(processes) && !_currentTrack.Contains("Audio detected"))
+                {
+                    return "Audio detected - track info unavailable";
+                }
+                
+                return "";
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error getting BlueALSA metadata: {ex.Message}");
+                return "";
+            }
+        }
+
+        private string ParseDBusMetadata(string dbusOutput)
+        {
+            try
+            {
+                // Parse D-Bus output for metadata
+                var lines = dbusOutput.Split('\n');
+                string artist = "";
+                string title = "";
+                
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    var line = lines[i].Trim();
+                    
+                    if (line.Contains("Artist"))
+                    {
+                        // Look for the value in the next few lines
+                        for (int j = i + 1; j < Math.Min(i + 5, lines.Length); j++)
+                        {
+                            if (lines[j].Contains("variant") || lines[j].Contains("string"))
+                            {
+                                artist = ExtractStringValue(lines[j]);
+                                break;
+                            }
+                        }
+                    }
+                    else if (line.Contains("Title"))
+                    {
+                        // Look for the value in the next few lines
+                        for (int j = i + 1; j < Math.Min(i + 5, lines.Length); j++)
+                        {
+                            if (lines[j].Contains("variant") || lines[j].Contains("string"))
+                            {
+                                title = ExtractStringValue(lines[j]);
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                if (!string.IsNullOrEmpty(artist) && !string.IsNullOrEmpty(title))
+                {
+                    return $"{artist} - {title}";
+                }
+                else if (!string.IsNullOrEmpty(title))
+                {
+                    return title;
+                }
+                
+                return "";
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error parsing D-Bus metadata: {ex.Message}");
+                return "";
+            }
+        }
+
+        private string ExtractStringValue(string line)
+        {
+            try
+            {
+                // Extract string value from D-Bus output line
+                var parts = line.Split('"');
+                if (parts.Length >= 2)
+                {
+                    return parts[1].Trim();
+                }
+                
+                // Alternative format
+                var match = System.Text.RegularExpressions.Regex.Match(line, @"string\s+""([^""]+)""");
+                if (match.Success)
+                {
+                    return match.Groups[1].Value;
+                }
+                
+                return "";
+            }
+            catch
+            {
+                return "";
+            }
         }
     }
 }
