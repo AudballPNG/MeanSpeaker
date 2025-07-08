@@ -169,6 +169,10 @@ namespace BluetoothSpeaker
             }
         }
 
+        // Track transition detection to prevent "silence" comments during song changes
+        private DateTime _lastTrackChange = DateTime.MinValue;
+        private readonly TimeSpan _trackTransitionWindow = TimeSpan.FromSeconds(5);
+        
         private async Task CheckForAudioChangesAsync()
         {
             try
@@ -188,12 +192,11 @@ namespace BluetoothSpeaker
                     
                     if (isPlayingAudio)
                     {
-                        // Audio just started
-                        var genericTrackInfo = "Unknown Track";
-                        if (_currentTrack != genericTrackInfo)
+                        // Audio just started - but don't override real track info
+                        if (string.IsNullOrEmpty(_currentTrack))
                         {
                             Console.WriteLine($"🎵 Audio playback detected from {_connectedDeviceName}");
-                            _currentTrack = genericTrackInfo;
+                            _currentTrack = "Audio detected - identifying track...";
                             
                             if (ShouldGenerateComment())
                             {
@@ -203,9 +206,23 @@ namespace BluetoothSpeaker
                     }
                     else
                     {
-                        // Audio stopped
-                        Console.WriteLine($"🔇 Audio playback stopped");
-                        _currentTrack = "";
+                        // Audio stopped - but don't immediately assume silence during track changes
+                        var timeSinceLastTrackChange = now - _lastTrackChange;
+                        
+                        if (timeSinceLastTrackChange > _trackTransitionWindow)
+                        {
+                            Console.WriteLine($"🔇 Audio playback stopped");
+                            _currentTrack = "";
+                            
+                            if (ShouldGenerateComment())
+                            {
+                                await GeneratePlaybackCommentAsync("stopped");
+                            }
+                        }
+                        else
+                        {
+                            Console.WriteLine($"🔄 Audio gap detected - likely track transition (waiting {_trackTransitionWindow.TotalSeconds}s)");
+                        }
                     }
                 }
             }
@@ -412,6 +429,7 @@ namespace BluetoothSpeaker
                 {
                     Console.WriteLine($"🎵 Now playing: {mprisMetadata}");
                     _currentTrack = mprisMetadata;
+                    _lastTrackChange = DateTime.Now;
                     await EnsureAudioRoutingAsync();
                     if (ShouldGenerateComment())
                     {
@@ -426,6 +444,7 @@ namespace BluetoothSpeaker
                 {
                     Console.WriteLine($"🎵 Now playing: {bluezMetadata}");
                     _currentTrack = bluezMetadata;
+                    _lastTrackChange = DateTime.Now;
                     await EnsureAudioRoutingAsync();
                     if (ShouldGenerateComment())
                     {
@@ -440,6 +459,7 @@ namespace BluetoothSpeaker
                 {
                     Console.WriteLine($"🎵 Now playing: {playerctlMetadata}");
                     _currentTrack = playerctlMetadata;
+                    _lastTrackChange = DateTime.Now;
                     await EnsureAudioRoutingAsync();
                     if (ShouldGenerateComment())
                     {
@@ -454,6 +474,7 @@ namespace BluetoothSpeaker
                 {
                     Console.WriteLine($"🎵 {audioActivity}");
                     _currentTrack = audioActivity;
+                    _lastTrackChange = DateTime.Now;
                     await EnsureAudioRoutingAsync();
                     if (ShouldGenerateComment())
                     {
@@ -468,6 +489,7 @@ namespace BluetoothSpeaker
                 {
                     Console.WriteLine($"🎵 Now playing: {blualsaMetadata}");
                     _currentTrack = blualsaMetadata;
+                    _lastTrackChange = DateTime.Now;
                     await EnsureAudioRoutingAsync();
                     if (ShouldGenerateComment())
                     {
@@ -1803,6 +1825,7 @@ namespace BluetoothSpeaker
                     var previousTrack = _currentTrack;
                     _currentTrack = newTrackString;
                     _currentTrackMetadata = e.CurrentTrack;
+                    _lastTrackChange = DateTime.Now; // Record when track changes for transition detection
                     
                     Console.WriteLine($"🎵 Track changed: {e.CurrentTrack.DetailedString}");
                     
