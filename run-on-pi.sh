@@ -20,6 +20,7 @@ setup_system() {
         bluetooth \
         bluez \
         bluez-tools \
+        bluealsa \
         pulseaudio \
         pulseaudio-module-bluetooth \
         alsa-utils \
@@ -89,12 +90,84 @@ EOF
     sudo systemctl enable bluetooth-agent.service
     sudo systemctl start bluetooth-agent.service
     
+    # Mark setup as complete
+    sudo touch /etc/bluetooth-speaker-setup-complete
+    
     # Restart Bluetooth service
     echo "Restarting Bluetooth service..."
     sudo systemctl restart bluetooth
     
     echo "✅ System setup complete!"
     echo ""
+}
+
+# Configure BlueALSA and audio routing services
+setup_audio_routing() {
+    echo "🔊 Setting up audio routing for Bluetooth speakers..."
+    
+    # Install BlueALSA if not already installed
+    if ! dpkg -s bluealsa &>/dev/null; then
+        echo "Installing BlueALSA..."
+        sudo apt-get install -y bluealsa
+    fi
+    
+    # Configure BlueALSA service
+    echo "Configuring BlueALSA..."
+    sudo tee /etc/systemd/system/bluealsa.service > /dev/null << 'EOF'
+[Unit]
+Description=BlueALSA service
+After=bluetooth.service
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/bluealsa -p a2dp-sink -p a2dp-source
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Create BlueALSA audio routing service (critical for audio to work)
+    echo "Setting up audio routing service..."
+    sudo tee /etc/systemd/system/bluealsa-aplay.service > /dev/null << 'EOF'
+[Unit]
+Description=BlueALSA audio routing service
+After=bluealsa.service sound.target
+Requires=bluealsa.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/bluealsa-aplay --pcm-buffer-time=250000 00:00:00:00:00:00
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Configure audio for better Bluetooth performance
+    echo "Configuring audio settings..."
+    sudo tee /etc/asound.conf > /dev/null << 'EOF'
+defaults.bluealsa.interface "hci0"
+defaults.bluealsa.profile "a2dp"
+defaults.bluealsa.delay 20000
+defaults.bluealsa.battery "yes"
+EOF
+
+    # Enable and start services
+    sudo systemctl daemon-reload
+    sudo systemctl enable bluealsa
+    sudo systemctl start bluealsa
+    sudo systemctl enable bluealsa-aplay
+    sudo systemctl start bluealsa-aplay
+    
+    # Set audio levels
+    echo "Setting audio levels..."
+    amixer sset Master,0 90% > /dev/null 2>&1 || true
+    amixer sset PCM,0 90% > /dev/null 2>&1 || true
+    
+    echo "✅ Audio routing setup complete!"
 }
 
 # Function to set up auto-start service
@@ -128,9 +201,9 @@ EOF
     sudo tee /etc/systemd/system/meanspeaker.service > /dev/null << EOF
 [Unit]
 Description=MeanSpeaker - Snarky Bluetooth Speaker with AI Commentary
-After=network.target bluetooth.target sound.target
+After=network.target bluetooth.target bluealsa.service bluealsa-aplay.service sound.target
 Wants=bluetooth.target
-Requires=network.target
+Requires=network.target bluealsa.service bluealsa-aplay.service
 
 [Service]
 Type=simple
@@ -166,6 +239,9 @@ SETUP_MARKER="/tmp/meanspeaker-setup-complete"
 if [ ! -f "$SETUP_MARKER" ]; then
     echo "🔧 First run detected. Running complete system setup..."
     setup_system
+    
+    # Configure audio routing
+    setup_audio_routing
     
     # Create setup marker
     touch "$SETUP_MARKER"

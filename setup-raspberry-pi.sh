@@ -18,6 +18,17 @@ sudo apt-get install -y \
     alsa-utils \
     playerctl
 
+# Install text-to-speech packages
+echo "Installing text-to-speech packages..."
+sudo apt-get install -y \
+    espeak \
+    espeak-data \
+    mbrola \
+    mbrola-voices \
+    festival \
+    festival-dev \
+    speech-dispatcher
+
 # Enable and start Bluetooth service
 echo "Enabling Bluetooth service..."
 sudo systemctl enable bluetooth
@@ -53,10 +64,39 @@ Restart=on-failure
 WantedBy=multi-user.target
 EOF
 
-# Enable BlueALSA service
+# Create BlueALSA audio routing service
+echo "Setting up audio routing..."
+sudo tee /etc/systemd/system/bluealsa-aplay.service > /dev/null << 'EOF'
+[Unit]
+Description=BlueALSA audio routing service
+After=bluealsa.service sound.target
+Requires=bluealsa.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/bluealsa-aplay --pcm-buffer-time=250000 00:00:00:00:00:00
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Enable BlueALSA services
 sudo systemctl daemon-reload
 sudo systemctl enable bluealsa
 sudo systemctl start bluealsa
+sudo systemctl enable bluealsa-aplay
+sudo systemctl start bluealsa-aplay
+
+# Configure audio for better Bluetooth performance
+echo "Configuring audio settings..."
+sudo tee /etc/asound.conf > /dev/null << 'EOF'
+defaults.bluealsa.interface "hci0"
+defaults.bluealsa.profile "a2dp"
+defaults.bluealsa.delay 20000
+defaults.bluealsa.battery "yes"
+EOF
 
 # Add user to audio group
 echo "Adding user to audio group..."
@@ -136,6 +176,46 @@ sudo systemctl start bt-agent
 echo "Restarting Bluetooth service..."
 sudo systemctl restart bluetooth
 
+# Set up audio mixer levels for optimal volume
+echo "Setting up audio levels..."
+sudo amixer sset PCM,0 100% > /dev/null 2>&1
+sudo amixer sset Master,0 100% > /dev/null 2>&1
+
+# Create a marker file to indicate setup is complete
+sudo touch /etc/bluetooth-speaker-setup-complete
+
+# Verify that everything is running correctly
+echo "Verifying audio and Bluetooth setup..."
+
+# Check BlueALSA service
+if systemctl is-active --quiet bluealsa; then
+    echo "✅ BlueALSA service is running"
+else
+    echo "⚠️  BlueALSA service is not running, starting it now..."
+    sudo systemctl start bluealsa
+fi
+
+# Check BlueALSA-aplay service (audio routing)
+if systemctl is-active --quiet bluealsa-aplay; then
+    echo "✅ BlueALSA-aplay service is running (audio routing active)"
+else
+    echo "⚠️  BlueALSA-aplay service is not running, starting it now..."
+    sudo systemctl start bluealsa-aplay
+fi
+
+# Check Bluetooth service
+if systemctl is-active --quiet bluetooth; then
+    echo "✅ Bluetooth service is running"
+else
+    echo "⚠️  Bluetooth service is not running, starting it now..."
+    sudo systemctl start bluetooth
+fi
+
+# Test audio output
+echo "Testing audio output..."
+aplay -l
+echo
+
 # Install .NET 8 if not already installed
 if ! command -v dotnet &> /dev/null; then
     echo "Installing .NET 8..."
@@ -154,5 +234,10 @@ echo "1. Reboot your Raspberry Pi: sudo reboot"
 echo "2. Set your OpenAI API key: export OPENAI_API_KEY='your-key-here'"
 echo "3. Build and run the application: dotnet run"
 echo "4. Connect your phone to 'The Little Shit' and start playing music!"
+echo ""
+echo "Audio Routing Information:"
+echo "- Music should now play through your Pi's speakers when connected via Bluetooth"
+echo "- If audio doesn't work after reboot, run: sudo systemctl restart bluealsa-aplay"
+echo "- To check audio routing status: systemctl status bluealsa-aplay"
 echo ""
 echo "The speaker will automatically insult your music choices! 🎵"

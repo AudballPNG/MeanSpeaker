@@ -67,6 +67,28 @@ sudo dotnet run
 
 Note: `sudo` is required for Bluetooth system configuration on first run.
 
+### Audio Issues?
+
+If you connect but no audio plays through the speaker (stays on your phone):
+
+1. **Run the setup script again**:
+   ```bash
+   sudo ./setup-raspberry-pi.sh
+   ```
+
+2. **Or run the audio fix script**:
+   ```bash
+   sudo ./fix-audio-routing.sh
+   ```
+
+3. **Verify services are running**:
+   ```bash
+   systemctl status bluealsa-aplay
+   ```
+
+The most common issue is that the audio routing service (`bluealsa-aplay`) 
+isn't running. This service routes audio from BlueALSA to your speakers.
+
 ## Usage
 
 ### Basic Usage

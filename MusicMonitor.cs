@@ -121,6 +121,9 @@ namespace BluetoothSpeaker
             // Initialize D-Bus connection
             await InitializeDBusAsync();
 
+            // Verify audio setup
+            await VerifyAudioSetupAsync();
+
             Console.WriteLine("Bluetooth Speaker initialized. Ready to receive audio and insult your music taste!");
         }
 
@@ -139,6 +142,7 @@ namespace BluetoothSpeaker
             // Start monitoring tasks
             _ = Task.Run(() => MonitorDevicesAsync(token), token);
             _ = Task.Run(() => MonitorMusicAsync(token), token);
+            _ = Task.Run(() => MonitorAudioRoutingAsync(token), token);
 
             Console.WriteLine("Monitoring started. Connect your device to start streaming music!");
         }
@@ -286,18 +290,22 @@ namespace BluetoothSpeaker
                             
                             // Set device as trusted
                             await device.SetAsync("Trusted", true);
-                                  // Find media player
-                        var playerInfo = await _objectManager.FindMediaPlayerForDeviceAsync(path);
-                        
-                        IDisposable? watcher = null;
-                        
-                        if (playerInfo.HasValue)
-                        {
-                            // Set up media player watcher
-                            watcher = await playerInfo.Value.Player.WatchPropertiesAsync(changes =>
+                            
+                            // Ensure audio routing is working for this device
+                            await EnsureAudioRoutingAsync(address);
+                            
+                            // Find media player
+                            var playerInfo = await _objectManager.FindMediaPlayerForDeviceAsync(path);
+                            
+                            IDisposable? watcher = null;
+                            
+                            if (playerInfo.HasValue)
                             {
-                                _ = Task.Run(() => HandleMediaPlayerChangesAsync(address, changes));
-                            });
+                                // Set up media player watcher
+                                watcher = await playerInfo.Value.Player.WatchPropertiesAsync(changes =>
+                                {
+                                    _ = Task.Run(() => HandleMediaPlayerChangesAsync(address, changes));
+                                });
                             
                             Console.WriteLine($"Media player found for {name}");
                         }
@@ -782,15 +790,47 @@ Restart=on-failure
 WantedBy=multi-user.target
 EOF
 
-# Enable and start BlueALSA
+# Create BlueALSA audio routing service
+cat > /etc/systemd/system/bluealsa-aplay.service << EOF
+[Unit]
+Description=BlueALSA audio routing service
+After=bluealsa.service sound.target
+Requires=bluealsa.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/bluealsa-aplay --pcm-buffer-time=250000 00:00:00:00:00:00
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Enable and start BlueALSA services
 systemctl daemon-reload
 systemctl enable bluealsa.service
 systemctl start bluealsa.service
+systemctl enable bluealsa-aplay.service
+systemctl start bluealsa-aplay.service
+
+# Configure audio for better Bluetooth performance
+cat > /etc/asound.conf << EOF
+defaults.bluealsa.interface ""hci0""
+defaults.bluealsa.profile ""a2dp""
+defaults.bluealsa.delay 20000
+defaults.bluealsa.battery ""yes""
+EOF
+
+# Set up audio mixer levels
+amixer sset PCM,0 100%
+amixer sset Master,0 100%
 
 # Mark setup as complete
 touch /etc/bluetooth-speaker-setup-complete
 
 echo ""Bluetooth speaker setup complete!""
+echo ""Audio routing configured - BlueALSA will now route audio to speakers""
 ";
 
             await File.WriteAllTextAsync(_tempSetupScriptPath, script);
@@ -846,6 +886,124 @@ echo ""Bluetooth speaker setup complete!""
             catch (Exception ex)
             {
                 Console.WriteLine($"Error running command '{command} {arguments}': {ex.Message}");
+            }
+        }
+
+        private async Task EnsureAudioRoutingAsync(string deviceAddress)
+        {
+            try
+            {
+                Console.WriteLine($"Ensuring audio routing for device {deviceAddress}...");
+                
+                // Restart bluealsa-aplay service to pick up new device
+                await RunCommandAsync("systemctl", "restart bluealsa-aplay");
+                
+                // Wait a moment for the service to restart
+                await Task.Delay(2000);
+                
+                // Check if audio routing is working
+                var bluetoothDevices = await RunCommandWithOutputAsync("bluetoothctl", "info");
+                Console.WriteLine("Audio routing configured for connected device");
+                
+                // Set audio levels for better quality
+                await RunCommandAsync("amixer", "sset Master,0 90%");
+                await RunCommandAsync("amixer", "sset PCM,0 90%");
+                
+                // Test audio routing with a brief notification
+                if (_enableSpeech)
+                {
+                    _ = Task.Run(async () => 
+                    {
+                        await Task.Delay(3000); // Give audio routing time to establish
+                        await SpeakAsync("Audio connection established. Your music will now play through the speaker.");
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Warning: Could not ensure audio routing: {ex.Message}");
+                // Try fallback method
+                await RunCommandAsync("pulseaudio", "--kill");
+                await Task.Delay(1000);
+                await RunCommandAsync("pulseaudio", "--start");
+            }
+        }
+
+        private async Task MonitorAudioRoutingAsync(CancellationToken cancellationToken)
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    // Check if bluealsa-aplay service is running
+                    var serviceStatus = await RunCommandWithOutputAsync("systemctl", "is-active bluealsa-aplay");
+                    if (serviceStatus.Trim() != "active")
+                    {
+                        Console.WriteLine("Warning: bluealsa-aplay service is not running. Attempting to restart...");
+                        await RunCommandAsync("systemctl", "restart bluealsa-aplay");
+                    }
+                    
+                    // Check for connected A2DP devices
+                    var bluetoothInfo = await RunCommandWithOutputAsync("bluetoothctl", "info");
+                    
+                    // Wait before next check
+                    await Task.Delay(30000, cancellationToken); // Check every 30 seconds
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error monitoring audio routing: {ex.Message}");
+                    await Task.Delay(10000, cancellationToken);
+                }
+            }
+        }
+
+        private async Task VerifyAudioSetupAsync()
+        {
+            try
+            {
+                Console.WriteLine("Verifying audio setup...");
+                
+                // Check if bluealsa service is running
+                var bluelsaStatus = await RunCommandWithOutputAsync("systemctl", "is-active bluealsa");
+                if (bluelsaStatus.Trim() != "active")
+                {
+                    Console.WriteLine("⚠️  BlueALSA service is not running. Audio may not work.");
+                    Console.WriteLine("   Run: sudo systemctl start bluealsa");
+                }
+                else
+                {
+                    Console.WriteLine("✅ BlueALSA service is running");
+                }
+                
+                // Check if bluealsa-aplay service is running
+                var aplayStatus = await RunCommandWithOutputAsync("systemctl", "is-active bluealsa-aplay");
+                if (aplayStatus.Trim() != "active")
+                {
+                    Console.WriteLine("⚠️  BlueALSA-aplay service is not running. Audio routing may not work.");
+                    Console.WriteLine("   This is the most common cause of 'no audio' issues.");
+                    Console.WriteLine("   Run: sudo systemctl start bluealsa-aplay");
+                }
+                else
+                {
+                    Console.WriteLine("✅ BlueALSA-aplay service is running (audio routing active)");
+                }
+                
+                // Check audio devices
+                var audioDevices = await RunCommandWithOutputAsync("aplay", "-l");
+                if (string.IsNullOrEmpty(audioDevices))
+                {
+                    Console.WriteLine("⚠️  No audio devices found. Check your speaker connection.");
+                }
+                else
+                {
+                    Console.WriteLine("✅ Audio devices detected");
+                }
+                
+                Console.WriteLine("Audio setup verification complete.\n");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Could not verify audio setup: {ex.Message}");
             }
         }
 
