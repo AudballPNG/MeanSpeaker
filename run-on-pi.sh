@@ -1,30 +1,171 @@
 #!/bin/bash
 
-# Script to properly run the Bluetooth Speaker on Raspberry Pi
+# Comprehensive Bluetooth Speaker Setup and Run Script for Raspberry Pi
+# This script handles everything: system setup, dependencies, build fixes, and running
 
-echo "🎵 Preparing to run Snarky Bluetooth Speaker on Raspberry Pi..."
+echo "🎵 Snarky Bluetooth Speaker - Complete Setup and Run Script"
+echo "============================================================"
 
-# Check if this is the first run by looking for setup marker
+# Function to run system setup
+setup_system() {
+    echo "🔧 Setting up Raspberry Pi Bluetooth system..."
+    
+    # Update system
+    echo "Updating system packages..."
+    sudo apt-get update
+    
+    # Install required packages (handle bluealsa not being available)
+    echo "Installing Bluetooth and audio packages..."
+    sudo apt-get install -y \
+        bluetooth \
+        bluez \
+        bluez-tools \
+        pulseaudio \
+        pulseaudio-module-bluetooth \
+        alsa-utils \
+        playerctl \
+        espeak \
+        espeak-data \
+        mbrola \
+        mbrola-voices \
+        festival \
+        festival-dev \
+        speech-dispatcher || echo "Some packages may not be available, continuing..."
+    
+    # Enable and start Bluetooth service
+    echo "Enabling Bluetooth service..."
+    sudo systemctl enable bluetooth
+    sudo systemctl start bluetooth
+    
+    # Configure Bluetooth for A2DP sink
+    echo "Configuring Bluetooth as A2DP sink..."
+    sudo tee /etc/bluetooth/main.conf > /dev/null << 'EOF'
+[General]
+Name = SnarkyBluetooth
+Class = 0x240404
+DiscoverableTimeout = 0
+PairableTimeout = 0
+
+[Policy]
+AutoEnable=true
+EOF
+    
+    # Add user to audio group
+    echo "Adding user to audio group..."
+    sudo usermod -a -G audio $USER
+    
+    # Set up automatic pairing agent
+    echo "Setting up automatic pairing agent..."
+    sudo tee /usr/local/bin/bluetooth-agent.sh > /dev/null << 'EOF'
+#!/bin/bash
+bluetoothctl << 'BTEOF'
+agent on
+default-agent
+discoverable on
+pairable on
+BTEOF
+EOF
+    
+    sudo chmod +x /usr/local/bin/bluetooth-agent.sh
+    
+    # Create service for auto-pairing
+    sudo tee /etc/systemd/system/bluetooth-agent.service > /dev/null << 'EOF'
+[Unit]
+Description=Bluetooth Auto-Pairing Agent
+After=bluetooth.service
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/bluetooth-agent.sh
+Restart=on-failure
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    sudo systemctl daemon-reload
+    sudo systemctl enable bluetooth-agent.service
+    sudo systemctl start bluetooth-agent.service
+    
+    # Restart Bluetooth service
+    echo "Restarting Bluetooth service..."
+    sudo systemctl restart bluetooth
+    
+    echo "✅ System setup complete!"
+    echo ""
+}
+
+# Function to set up auto-start service
+setup_autostart() {
+    echo "🚀 Setting up auto-start service..."
+    
+    # Get current user and paths
+    USER_NAME=$(whoami)
+    APP_PATH=$(pwd)
+    DOTNET_PATH=$(which dotnet)
+    
+    # Check if .env file exists, create if not
+    if [ ! -f ".env" ]; then
+        echo "Creating .env file template..."
+        cat > .env << 'EOF'
+# OpenAI API Configuration
+OPENAI_API_KEY=your-api-key-here
+
+# Speech Configuration
+ENABLE_SPEECH=true
+TTS_VOICE=en+f3
+EOF
+        echo "⚠️  Please edit .env file and add your OpenAI API key!"
+    fi
+    
+    # Build in release mode
+    echo "Building application in release mode..."
+    dotnet build -c Release
+    
+    # Create systemd service
+    sudo tee /etc/systemd/system/meanspeaker.service > /dev/null << EOF
+[Unit]
+Description=MeanSpeaker - Snarky Bluetooth Speaker with AI Commentary
+After=network.target bluetooth.target sound.target
+Wants=bluetooth.target
+Requires=network.target
+
+[Service]
+Type=simple
+User=$USER_NAME
+Group=$USER_NAME
+WorkingDirectory=$APP_PATH
+Environment=DOTNET_ROOT=/home/$USER_NAME/.dotnet
+Environment=PATH=/home/$USER_NAME/.dotnet:\$PATH
+EnvironmentFile=$APP_PATH/.env
+ExecStart=$DOTNET_PATH run --configuration Release
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    # Enable and start service
+    sudo systemctl daemon-reload
+    sudo systemctl enable meanspeaker.service
+    sudo systemctl start meanspeaker.service
+    
+    echo "✅ Auto-start service created and started!"
+    echo "Use 'sudo systemctl status meanspeaker' to check status"
+    echo "Use 'sudo journalctl -u meanspeaker -f' to view logs"
+}
+
+# Check if this is the first run
 SETUP_MARKER="/tmp/meanspeaker-setup-complete"
 
 if [ ! -f "$SETUP_MARKER" ]; then
-    echo "🔧 First run detected. Running system setup..."
-    
-    # Run Raspberry Pi setup script
-    if [ -f "setup-raspberry-pi.sh" ]; then
-        echo "Setting up Raspberry Pi Bluetooth system..."
-        chmod +x setup-raspberry-pi.sh
-        ./setup-raspberry-pi.sh
-        
-        if [ $? -eq 0 ]; then
-            echo "✅ Raspberry Pi setup completed successfully!"
-        else
-            echo "❌ Raspberry Pi setup failed. Please check the errors above."
-            exit 1
-        fi
-    else
-        echo "⚠️  setup-raspberry-pi.sh not found. Skipping system setup."
-    fi
+    echo "🔧 First run detected. Running complete system setup..."
+    setup_system
     
     # Create setup marker
     touch "$SETUP_MARKER"
@@ -32,36 +173,87 @@ if [ ! -f "$SETUP_MARKER" ]; then
     echo ""
 fi
 
-# Clean any leftover build artifacts
-echo "Cleaning build artifacts..."
+# Comprehensive build and run process
+echo "🔨 Building and running application..."
+
+# Nuclear clean - remove everything
+echo "Performing complete clean..."
 dotnet clean
+rm -rf obj/ bin/
+dotnet nuget locals all --clear
 
-# Remove obj and bin directories completely to ensure clean build
-echo "Removing obj and bin directories..."
-rm -rf obj/
-rm -rf bin/
+# Remove any problematic assembly files
+echo "Removing assembly attribute files..."
+find . -name "*.AssemblyAttributes.cs" -delete 2>/dev/null || true
+find . -name "*.AssemblyInfo.cs" -delete 2>/dev/null || true
 
-# Restore packages
+# Restore packages with no cache
 echo "Restoring NuGet packages..."
-dotnet restore
+dotnet restore --no-cache
 
-# Build the application
+# Build with assembly info disabled
 echo "Building application..."
-dotnet build
+dotnet build --no-restore -p:GenerateAssemblyInfo=false --verbosity minimal
+
+# If build still fails, try with minimal project settings
+if [ $? -ne 0 ]; then
+    echo "Build failed. Trying with minimal project settings..."
+    
+    # Backup original project file
+    cp BluetoothSpeaker.csproj BluetoothSpeaker.csproj.backup
+    
+    # Create minimal project file
+    cat > BluetoothSpeaker.csproj << 'EOF'
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <UseAppHost>true</UseAppHost>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Text.Json" Version="9.0.6" />
+    <PackageReference Include="Tmds.DBus" Version="0.21.2" />
+  </ItemGroup>
+</Project>
+EOF
+    
+    # Clean and build again
+    dotnet clean
+    rm -rf obj/ bin/
+    dotnet restore --no-cache
+    dotnet build --no-restore -p:GenerateAssemblyInfo=false --verbosity minimal
+    
+    if [ $? -ne 0 ]; then
+        echo "❌ Build still failed. Restoring original project file."
+        mv BluetoothSpeaker.csproj.backup BluetoothSpeaker.csproj
+        exit 1
+    fi
+fi
 
 # Check if build was successful
 if [ $? -eq 0 ]; then
     echo "✅ Build successful! Starting application..."
     echo ""
     
-    # Set OpenAI API key if not already set
+    # Check for OpenAI API key
     if [ -z "$OPENAI_API_KEY" ]; then
         echo "⚠️  OpenAI API key not found in environment variables."
-        echo "You'll be prompted to enter it when the application starts."
+        echo "Checking for .env file..."
+        
+        if [ -f ".env" ]; then
+            echo "Found .env file. Make sure it contains your OpenAI API key."
+            echo "You can edit it with: nano .env"
+        else
+            echo "No .env file found. You'll be prompted to enter your API key."
+        fi
         echo ""
     fi
     
     # Run the application
+    echo "🎵 Starting Snarky Bluetooth Speaker..."
     dotnet run
 else
     echo "❌ Build failed. Please check the errors above."
@@ -76,20 +268,18 @@ read -p "Set up auto-start? (y/n): " -n 1 -r
 echo ""
 
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    if [ -f "setup-autostart.sh" ]; then
-        echo "Setting up auto-start service..."
-        chmod +x setup-autostart.sh
-        ./setup-autostart.sh
-        
-        if [ $? -eq 0 ]; then
-            echo "✅ Auto-start setup completed successfully!"
-            echo "MeanSpeaker will now start automatically on boot."
-        else
-            echo "❌ Auto-start setup failed. Please check the errors above."
-        fi
-    else
-        echo "⚠️  setup-autostart.sh not found. Cannot set up auto-start."
-    fi
+    setup_autostart
 else
-    echo "Auto-start setup skipped. You can run setup-autostart.sh manually later."
+    echo "Auto-start setup skipped."
+    echo "You can run this script again and choose 'y' to set up auto-start later."
 fi
+
+echo ""
+echo "🎵 Script completed! Your Bluetooth speaker is ready to insult music choices!"
+echo ""
+echo "Useful commands:"
+echo "  - Check service status: sudo systemctl status meanspeaker"
+echo "  - View logs: sudo journalctl -u meanspeaker -f"
+echo "  - Stop service: sudo systemctl stop meanspeaker"
+echo "  - Start service: sudo systemctl start meanspeaker"
+echo "  - Restart service: sudo systemctl restart meanspeaker"

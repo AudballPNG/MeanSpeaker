@@ -1,64 +1,58 @@
 # Troubleshooting Guide for Bluetooth Speaker on Raspberry Pi
 
-## Issue: Duplicate Assembly Attributes Error
+## One-Stop Solution
 
-If you see errors like:
+**Just run the comprehensive setup script:**
+```bash
+cd ~/MeanSpeaker
+chmod +x run-on-pi.sh
+./run-on-pi.sh
 ```
-error CS0579: Duplicate 'global::System.Runtime.Versioning.TargetFrameworkAttribute' attribute
-```
 
-### Solution:
-
-1. **Clean everything completely:**
-   ```bash
-   cd ~/MeanSpeaker
-   dotnet clean
-   rm -rf obj/
-   rm -rf bin/
-   ```
-
-2. **Run the provided script (recommended):**
-   ```bash
-   chmod +x run-on-pi.sh
-   ./run-on-pi.sh
-   ```
-   
-   This script will:
-   - Automatically run system setup on first run
-   - Clean and build the project
-   - Run the application
-   - Optionally set up auto-start service
-
-3. **Or manually step by step:**
-   ```bash
-   dotnet restore
-   dotnet build
-   dotnet run
-   ```
+This single script handles:
+- ✅ Complete system setup (first run only)
+- ✅ Dependency installation
+- ✅ Bluetooth configuration
+- ✅ Assembly attributes fix
+- ✅ Clean build process
+- ✅ Application execution
+- ✅ Auto-start service setup
 
 ## Common Issues and Solutions:
 
-### 1. Build Errors
-- Always clean before building: `dotnet clean`
-- Delete obj/ and bin/ directories completely
-- Restore packages: `dotnet restore`
+### 1. Duplicate Assembly Attributes Error
+**The script automatically handles this**, but if you need to fix manually:
+```bash
+dotnet clean && rm -rf obj/ bin/ && dotnet nuget locals all --clear
+find . -name "*.AssemblyAttributes.cs" -delete
+dotnet restore --no-cache && dotnet build -p:GenerateAssemblyInfo=false
+```
 
 ### 2. Missing Dependencies
-Make sure you have:
-- .NET 8 SDK installed
-- BlueZ and Bluetooth tools: `sudo apt-get install bluez bluetooth bluez-tools`
-- Audio tools: `sudo apt-get install playerctl pulseaudio-module-bluetooth`
+**The script installs these automatically**, but manual installation:
+```bash
+sudo apt-get update
+sudo apt-get install -y bluetooth bluez bluez-tools pulseaudio pulseaudio-module-bluetooth playerctl espeak
+```
 
-### 3. Permission Issues
-- Run with sudo if needed for Bluetooth operations
-- Make sure your user is in the bluetooth group: `sudo usermod -a -G bluetooth $USER`
+### 3. Build Errors
+**The script uses multiple fallback strategies**, including:
+- Nuclear clean approach
+- Assembly info disabled
+- Minimal project file fallback
 
-### 4. API Key Issues
-- Set environment variable: `export OPENAI_API_KEY="your-key-here"`
-- Or add to ~/.bashrc for permanent setting
+### 4. Service Management
+After running the script with auto-start enabled:
+```bash
+# Check status
+sudo systemctl status meanspeaker
 
-### 5. Application Shows "Hello World"
-This was caused by a duplicate project structure. Make sure you're in the correct directory and there's only one Program.cs file.
+# View logs
+sudo journalctl -u meanspeaker -f
+
+# Restart service
+sudo systemctl restart meanspeaker
+```
 
 ## Expected Output:
 When running correctly, you should see:
@@ -67,7 +61,17 @@ When running correctly, you should see:
 Speech: Enabled
 Voice: en+f3
 Initializing Bluetooth Speaker...
-...
 ```
 
-NOT "Hello, World!"
+**NOT** "Hello, World!"
+
+## Environment Variables:
+The script creates a `.env` file template. Edit it with:
+```bash
+nano .env
+```
+
+Add your OpenAI API key:
+```
+OPENAI_API_KEY=your-actual-api-key-here
+```
