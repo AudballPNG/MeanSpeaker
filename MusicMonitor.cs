@@ -20,8 +20,14 @@ namespace BluetoothSpeaker
         private readonly bool _enableSpeech;
         private readonly string _ttsVoice;
         
+        // Enhanced metadata services
+        private BluetoothMetadataService? _bluetoothMetadataService;
+        private FallbackMetadataService? _fallbackMetadataService;
+        private bool _usingFallbackOnly = false;
+        
         // Simple state tracking
         private string _currentTrack = "";
+        private TrackMetadata? _currentTrackMetadata = null;
         private string _connectedDeviceName = "";
         private string _connectedDeviceAddress = "";
         private DateTime _lastCommentTime = DateTime.MinValue;
@@ -46,18 +52,50 @@ namespace BluetoothSpeaker
 
         public async Task InitializeAsync()
         {
-            Console.WriteLine("🎵 Initializing Simple Bluetooth Speaker...");
+            Console.WriteLine("🎵 Initializing Enhanced Bluetooth Speaker...");
             
             if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
             {
                 Console.WriteLine("Warning: This is designed for Linux with BlueZ.");
-                return;
+                _usingFallbackOnly = true;
             }
+
+            // Initialize primary D-Bus metadata service
+            if (!_usingFallbackOnly)
+            {
+                _bluetoothMetadataService = new BluetoothMetadataService();
+                var dbusSuccess = await _bluetoothMetadataService.InitializeAsync();
+                
+                if (dbusSuccess)
+                {
+                    Console.WriteLine("✅ D-Bus metadata service initialized");
+                    
+                    // Setup event handlers
+                    _bluetoothMetadataService.TrackChanged += OnTrackChanged;
+                    _bluetoothMetadataService.PlaybackStateChanged += OnPlaybackStateChanged;
+                    _bluetoothMetadataService.DeviceConnected += OnDeviceConnected;
+                    _bluetoothMetadataService.DeviceDisconnected += OnDeviceDisconnected;
+                }
+                else
+                {
+                    Console.WriteLine("⚠️ D-Bus service failed, falling back to command-line methods");
+                    _usingFallbackOnly = true;
+                    _bluetoothMetadataService?.Dispose();
+                    _bluetoothMetadataService = null;
+                }
+            }
+
+            // Initialize fallback service (always available)
+            _fallbackMetadataService = new FallbackMetadataService();
+            _fallbackMetadataService.TrackChanged += OnTrackChanged;
+            _fallbackMetadataService.PlaybackStateChanged += OnPlaybackStateChanged;
+            
+            Console.WriteLine($"🔧 Using {(_usingFallbackOnly ? "fallback-only" : "D-Bus + fallback")} metadata detection");
 
             // Do complete automatic setup
             await AutoSetupBluetoothSpeakerAsync();
             
-            Console.WriteLine("✅ Simple Bluetooth Speaker initialized and ready!");
+            Console.WriteLine("✅ Enhanced Bluetooth Speaker initialized and ready!");
         }
 
         public Task StartMonitoringAsync()
@@ -82,20 +120,37 @@ namespace BluetoothSpeaker
             {
                 try
                 {
-                    // 1. Check for connected devices (every cycle)
+                    // 1. Check for connected devices (every cycle) - keep legacy detection for compatibility
                     await CheckConnectedDevicesAsync();
                     
-                    // 2. If device connected, check for music
-                    if (!string.IsNullOrEmpty(_connectedDeviceAddress))
+                    // 2. If using D-Bus service, it handles track changes automatically via events
+                    // Only use legacy polling if we don't have real-time data
+                    if (_usingFallbackOnly || _bluetoothMetadataService == null)
                     {
-                        await CheckCurrentTrackAsync();
-                        
-                        // Also check for generic audio activity (fallback)
-                        await CheckForAudioChangesAsync();
+                        // Use legacy polling methods as additional fallback
+                        if (!string.IsNullOrEmpty(_connectedDeviceAddress))
+                        {
+                            await CheckCurrentTrackAsync();
+                            await CheckForAudioChangesAsync();
+                        }
+                    }
+                    else
+                    {
+                        // D-Bus service is handling real-time updates, just ensure we have a current track
+                        if (string.IsNullOrEmpty(_currentTrack))
+                        {
+                            var anyTrack = _bluetoothMetadataService.GetAnyCurrentTrack();
+                            if (anyTrack?.IsValid == true)
+                            {
+                                _currentTrack = anyTrack.FormattedString;
+                                _currentTrackMetadata = anyTrack;
+                            }
+                        }
                     }
                     
-                    // Simple 2-second polling like your working system
-                    await Task.Delay(2000, cancellationToken);
+                    // Longer polling interval since D-Bus provides real-time updates
+                    var delay = _usingFallbackOnly ? 2000 : 5000;
+                    await Task.Delay(delay, cancellationToken);
                 }
                 catch (OperationCanceledException)
                 {
@@ -786,11 +841,17 @@ namespace BluetoothSpeaker
         {
             Console.WriteLine("📦 Installing basic packages...");
             await RunCommandSilentlyAsync("apt-get", "update");
-            await RunCommandSilentlyAsync("apt-get", "install -y bluetooth bluez bluez-tools bluealsa alsa-utils playerctl espeak");
             
-            Console.WriteLine("� Starting services...");
+            // Enhanced package list for D-Bus metadata support
+            await RunCommandSilentlyAsync("apt-get", "install -y bluetooth bluez bluez-tools bluealsa alsa-utils playerctl espeak");
+            await RunCommandSilentlyAsync("apt-get", "install -y dbus dbus-user-session libdbus-1-dev");
+            await RunCommandSilentlyAsync("apt-get", "install -y pulseaudio pulseaudio-module-bluetooth");
+            
+            Console.WriteLine("🔌 Starting services...");
             await RunCommandSilentlyAsync("systemctl", "enable bluetooth");
             await RunCommandSilentlyAsync("systemctl", "start bluetooth");
+            await RunCommandSilentlyAsync("systemctl", "enable dbus");
+            await RunCommandSilentlyAsync("systemctl", "start dbus");
             
             Console.WriteLine("📡 Making Bluetooth discoverable...");
             await RunCommandSilentlyAsync("bluetoothctl", "power on");
@@ -906,25 +967,58 @@ namespace BluetoothSpeaker
 
         public async Task ShowStatusAsync()
         {
-            Console.WriteLine("=== SIMPLE BLUETOOTH SPEAKER STATUS ===");
+            Console.WriteLine("=== ENHANCED BLUETOOTH SPEAKER STATUS ===");
             Console.WriteLine($"Connected Device: {(_connectedDeviceName ?? "None")}");
             Console.WriteLine($"Device Address: {(_connectedDeviceAddress ?? "None")}");
             Console.WriteLine($"Current Track: {(_currentTrack ?? "None")}");
+            
+            // Enhanced metadata info
+            if (_currentTrackMetadata?.IsValid == true)
+            {
+                Console.WriteLine($"Track Details:");
+                Console.WriteLine($"  Artist: {_currentTrackMetadata.Artist}");
+                Console.WriteLine($"  Title: {_currentTrackMetadata.Title}");
+                if (!string.IsNullOrEmpty(_currentTrackMetadata.Album) && _currentTrackMetadata.Album != "Unknown Album")
+                    Console.WriteLine($"  Album: {_currentTrackMetadata.Album}");
+                if (!string.IsNullOrEmpty(_currentTrackMetadata.Genre))
+                    Console.WriteLine($"  Genre: {_currentTrackMetadata.Genre}");
+                if (_currentTrackMetadata.Duration > 0)
+                    Console.WriteLine($"  Duration: {TimeSpan.FromMicroseconds(_currentTrackMetadata.Duration):mm\\:ss}");
+            }
+            
             Console.WriteLine($"Last Comment: {_lastCommentTime:HH:mm:ss}");
+            
+            // Metadata service status
+            Console.WriteLine($"\nMetadata Services:");
+            Console.WriteLine($"  D-Bus Service: {(_bluetoothMetadataService != null ? "Active" : "Disabled")}");
+            Console.WriteLine($"  Fallback Service: {(_fallbackMetadataService != null ? "Active" : "Disabled")}");
+            Console.WriteLine($"  Mode: {(_usingFallbackOnly ? "Fallback Only" : "D-Bus + Fallback")}");
+            
+            if (_bluetoothMetadataService != null)
+            {
+                var connectedDevices = _bluetoothMetadataService.GetConnectedDevices().ToList();
+                Console.WriteLine($"  D-Bus Connected Devices: {connectedDevices.Count}");
+                foreach (var device in connectedDevices)
+                {
+                    var currentTrack = _bluetoothMetadataService.GetCurrentTrack(device);
+                    var currentState = _bluetoothMetadataService.GetCurrentState(device);
+                    Console.WriteLine($"    {device}: {(currentTrack?.IsValid == true ? currentTrack.FormattedString : "No track")} ({currentState})");
+                }
+            }
             
             // Service status check
             var bluetoothStatus = await RunCommandWithOutputAsync("systemctl", "is-active bluetooth");
             var blualsaStatus = await RunCommandWithOutputAsync("systemctl", "is-active bluealsa");
             var aplayStatus = await RunCommandWithOutputAsync("systemctl", "is-active bluealsa-aplay");
             
-            Console.WriteLine($"\nServices:");
+            Console.WriteLine($"\nSystem Services:");
             Console.WriteLine($"  Bluetooth: {bluetoothStatus.Trim()}");
             Console.WriteLine($"  BlueALSA: {blualsaStatus.Trim()}");
             Console.WriteLine($"  BlueALSA-aplay: {aplayStatus.Trim()}");
             
             // Check for any connected devices
-            var connectedDevices = await RunCommandWithOutputAsync("bluetoothctl", "devices Connected");
-            Console.WriteLine($"\nConnected via bluetoothctl: {(!string.IsNullOrEmpty(connectedDevices?.Trim()) ? "Yes" : "No")}");
+            var connectedDevices2 = await RunCommandWithOutputAsync("bluetoothctl", "devices Connected");
+            Console.WriteLine($"\nConnected via bluetoothctl: {(!string.IsNullOrEmpty(connectedDevices2?.Trim()) ? "Yes" : "No")}");
             
             // Check BlueALSA devices
             var blualsaDevices = await RunCommandWithOutputAsync("bluealsa-aplay", "-l");
@@ -994,6 +1088,24 @@ namespace BluetoothSpeaker
             if (_disposed) return;
             
             StopMonitoring();
+            
+            // Dispose enhanced services
+            if (_bluetoothMetadataService != null)
+            {
+                _bluetoothMetadataService.TrackChanged -= OnTrackChanged;
+                _bluetoothMetadataService.PlaybackStateChanged -= OnPlaybackStateChanged;
+                _bluetoothMetadataService.DeviceConnected -= OnDeviceConnected;
+                _bluetoothMetadataService.DeviceDisconnected -= OnDeviceDisconnected;
+                _bluetoothMetadataService.Dispose();
+            }
+            
+            if (_fallbackMetadataService != null)
+            {
+                _fallbackMetadataService.TrackChanged -= OnTrackChanged;
+                _fallbackMetadataService.PlaybackStateChanged -= OnPlaybackStateChanged;
+                _fallbackMetadataService.Dispose();
+            }
+            
             _monitoringCancellation?.Dispose();
             _httpClient?.Dispose();
             
@@ -1337,8 +1449,7 @@ namespace BluetoothSpeaker
                     return "";
                 
                 // Try to get media player interface from BlueZ
-                var devicePath = $"/org/bluez/hci0/dev_{_connectedDeviceAddress.Replace(":", "_")}
-";
+                var devicePath = $"/org/bluez/hci0/dev_{_connectedDeviceAddress.Replace(":", "_")}";
                 
                 // First, check if device has MediaPlayer1 interface
                 var introspect = await RunCommandWithOutputAsync("dbus-send", 
@@ -1515,6 +1626,199 @@ namespace BluetoothSpeaker
             {
                 Console.WriteLine($"❌ Error detecting audio activity: {ex.Message}");
                 return "";
+            }
+        }
+
+        // Event handlers for enhanced metadata services
+        private async void OnTrackChanged(object? sender, TrackChangedEventArgs e)
+        {
+            try
+            {
+                var newTrackString = e.CurrentTrack.FormattedString;
+                
+                if (newTrackString != _currentTrack && e.CurrentTrack.IsValid)
+                {
+                    var previousTrack = _currentTrack;
+                    _currentTrack = newTrackString;
+                    _currentTrackMetadata = e.CurrentTrack;
+                    
+                    Console.WriteLine($"🎵 Track changed: {e.CurrentTrack.DetailedString}");
+                    
+                    await EnsureAudioRoutingAsync();
+                    
+                    if (ShouldGenerateComment())
+                    {
+                        await GenerateEnhancedTrackCommentAsync(e.CurrentTrack, e.PreviousTrack);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error handling track change: {ex.Message}");
+            }
+        }
+
+        private async void OnPlaybackStateChanged(object? sender, PlaybackStateChangedEventArgs e)
+        {
+            try
+            {
+                Console.WriteLine($"▶️ Playback state: {e.PreviousState} -> {e.CurrentState}");
+                
+                if (e.CurrentState == PlaybackState.Playing && e.CurrentTrack?.IsValid == true)
+                {
+                    await EnsureAudioRoutingAsync();
+                }
+                
+                // Generate comment for significant state changes
+                if (e.CurrentState == PlaybackState.Playing && e.PreviousState != PlaybackState.Playing)
+                {
+                    if (e.CurrentTrack?.IsValid == true && ShouldGenerateComment())
+                    {
+                        await GenerateEnhancedTrackCommentAsync(e.CurrentTrack);
+                    }
+                }
+                else if (e.CurrentState == PlaybackState.Paused && e.PreviousState == PlaybackState.Playing)
+                {
+                    if (ShouldGenerateComment())
+                    {
+                        await GeneratePlaybackCommentAsync("paused");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error handling playback state change: {ex.Message}");
+            }
+        }
+
+        private async void OnDeviceConnected(object? sender, string deviceAddress)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(_connectedDeviceAddress) || _connectedDeviceAddress == "detected")
+                {
+                    _connectedDeviceAddress = deviceAddress;
+                    Console.WriteLine($"📱 Enhanced device connected: {deviceAddress}");
+                    
+                    // Try to get device name
+                    var deviceInfo = await RunCommandWithOutputAsync("bluetoothctl", $"info {deviceAddress}");
+                    if (!string.IsNullOrEmpty(deviceInfo))
+                    {
+                        var nameMatch = System.Text.RegularExpressions.Regex.Match(deviceInfo, @"Name:\s*(.+)");
+                        if (nameMatch.Success)
+                        {
+                            _connectedDeviceName = nameMatch.Groups[1].Value.Trim();
+                            Console.WriteLine($"📱 Device name: {_connectedDeviceName}");
+                            
+                            if (ShouldGenerateComment())
+                            {
+                                await GenerateWelcomeCommentAsync(_connectedDeviceName);
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error handling device connection: {ex.Message}");
+            }
+        }
+
+        private void OnDeviceDisconnected(object? sender, string deviceAddress)
+        {
+            try
+            {
+                if (_connectedDeviceAddress == deviceAddress)
+                {
+                    Console.WriteLine($"📱 Enhanced device disconnected: {_connectedDeviceName} ({deviceAddress})");
+                    _connectedDeviceAddress = "";
+                    _connectedDeviceName = "";
+                    _currentTrack = "";
+                    _currentTrackMetadata = null;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error handling device disconnection: {ex.Message}");
+            }
+        }
+
+        private async Task GenerateEnhancedTrackCommentAsync(TrackMetadata currentTrack, TrackMetadata? previousTrack = null)
+        {
+            try
+            {
+                var trackInfo = currentTrack.DetailedString;
+                
+                if (previousTrack?.IsValid == true)
+                {
+                    var prompts = new[]
+                    {
+                        $"Switching from '{previousTrack.FormattedString}' to '{trackInfo}'? Interesting musical journey you're on.",
+                        $"Oh, done with '{previousTrack.FormattedString}' already? Now it's '{trackInfo}'. Your attention span is... something.",
+                        $"From '{previousTrack.FormattedString}' to '{trackInfo}' - that's quite the genre hop. Are you having an identity crisis?",
+                        $"'{previousTrack.FormattedString}' to '{trackInfo}' - someone's exploring the full spectrum of questionable taste.",
+                        $"Abandoning '{previousTrack.FormattedString}' for '{trackInfo}'? Bold choice. Not good, but bold."
+                    };
+                    
+                    var prompt = prompts[_random.Next(prompts.Length)];
+                    await GenerateAndSpeakCommentAsync(prompt);
+                }
+                else
+                {
+                    // Enhanced single track comments with more metadata
+                    var prompts = new[]
+                    {
+                        $"Really? '{trackInfo}'? That's what passes for music these days?",
+                        $"Oh wonderful, '{trackInfo}'. Let me guess, this is your 'favorite song'?",
+                        $"'{trackInfo}' - because nothing says 'good taste' like... actually, no, this doesn't say that at all.",
+                        $"Playing '{trackInfo}'. Well, I've heard worse... wait, no, I haven't.",
+                        $"'{trackInfo}' coming right up. Hope your neighbors appreciate your... unique... musical choices.",
+                        currentTrack.Album != "Unknown Album" && !string.IsNullOrEmpty(currentTrack.Album) ?
+                            $"'{trackInfo}' from the album '{currentTrack.Album}'. Someone actually decided to record a whole album of this?" :
+                            $"'{trackInfo}' - no album info, probably for the best. Less evidence of poor decisions."
+                    };
+                    
+                    var prompt = prompts[_random.Next(prompts.Length)];
+                    await GenerateAndSpeakCommentAsync(prompt);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error generating enhanced track comment: {ex.Message}");
+            }
+        }
+
+        private async Task GeneratePlaybackCommentAsync(string action)
+        {
+            try
+            {
+                var prompts = action.ToLowerInvariant() switch
+                {
+                    "paused" => new[]
+                    {
+                        "Paused? Thank goodness, my circuits needed a break from that assault on music.",
+                        "Finally, some silence. Was starting to think you'd never give my speakers a rest.",
+                        "Paused the music? Smart move. Even I need time to recover from that experience.",
+                        "Oh good, you paused it. I was beginning to question your life choices... well, more than usual."
+                    },
+                    "stopped" => new[]
+                    {
+                        "Stopped the music? Probably for the best. My speakers will thank you.",
+                        "Music stopped. Finally, some peace and quiet to contemplate better life choices.",
+                        "Well, that's over. Now I can pretend that never happened."
+                    },
+                    _ => new[]
+                    {
+                        "Something happened with the music. Not sure what, but I'm ready to judge it."
+                    }
+                };
+                
+                var prompt = prompts[_random.Next(prompts.Length)];
+                await GenerateAndSpeakCommentAsync(prompt);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error generating playback comment: {ex.Message}");
             }
         }
     }

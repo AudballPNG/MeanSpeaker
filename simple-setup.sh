@@ -19,12 +19,17 @@ sudo apt-get install -y \
     playerctl \
     espeak \
     pulseaudio \
-    pulseaudio-module-bluetooth
+    pulseaudio-module-bluetooth \
+    dbus \
+    dbus-user-session \
+    libdbus-1-dev
 
 # Enable and start Bluetooth
 echo "🔵 Configuring Bluetooth..."
 sudo systemctl enable bluetooth
 sudo systemctl start bluetooth
+sudo systemctl enable dbus
+sudo systemctl start dbus
 
 # Configure Bluetooth for A2DP sink
 echo "🎧 Setting up A2DP audio sink..."
