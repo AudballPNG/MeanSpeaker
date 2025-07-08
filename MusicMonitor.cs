@@ -76,6 +76,7 @@ namespace BluetoothSpeaker
         private IObjectManager? _objectManager;
         private IAdapter1? _adapter;
         private ObjectPath _adapterPath;
+        private readonly object _deviceLock = new object();
         private Dictionary<string, (IDevice1 Device, ObjectPath Path, IMediaPlayer1? Player, ObjectPath? PlayerPath, IDisposable? StatusWatcher)> _activeDevices = new();
         
         // Session-based memory for each device
@@ -154,9 +155,23 @@ namespace BluetoothSpeaker
             _monitoringCancellation?.Cancel();
             
             // Clean up watchers and display session summaries
-            foreach (var (address, deviceEntry) in _activeDevices)
+            Dictionary<string, (IDevice1 Device, ObjectPath Path, IMediaPlayer1? Player, ObjectPath? PlayerPath, IDisposable? StatusWatcher)> devicesToCleanup;
+            lock (_deviceLock)
             {
-                deviceEntry.StatusWatcher?.Dispose();
+                devicesToCleanup = new Dictionary<string, (IDevice1, ObjectPath, IMediaPlayer1?, ObjectPath?, IDisposable?)>(_activeDevices);
+                _activeDevices.Clear();
+            }
+            
+            foreach (var (address, deviceEntry) in devicesToCleanup)
+            {
+                try
+                {
+                    deviceEntry.StatusWatcher?.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error disposing watcher for {address}: {ex.Message}");
+                }
                 
                 if (_deviceSessions.TryGetValue(address, out var session))
                 {
@@ -177,7 +192,6 @@ namespace BluetoothSpeaker
                 }
             }
             
-            _activeDevices.Clear();
             _deviceSessions.Clear();
             
             Console.WriteLine("Monitoring stopped.");
@@ -251,7 +265,12 @@ namespace BluetoothSpeaker
                     var currentDeviceAddresses = devices.Select(d => d.Address).ToHashSet();
                     
                     // Check for disconnected devices and clean up their sessions
-                    var disconnectedDevices = _activeDevices.Keys.Where(addr => !currentDeviceAddresses.Contains(addr)).ToList();
+                    var disconnectedDevices = new List<string>();
+                    lock (_deviceLock)
+                    {
+                        disconnectedDevices = _activeDevices.Keys.Where(addr => !currentDeviceAddresses.Contains(addr)).ToList();
+                    }
+                    
                     foreach (var address in disconnectedDevices)
                     {
                         if (_deviceSessions.TryGetValue(address, out var session))
@@ -264,18 +283,34 @@ namespace BluetoothSpeaker
                             _deviceSessions.Remove(address);
                         }
                         
-                        // Clean up device watcher
-                        if (_activeDevices.TryGetValue(address, out var deviceEntry))
+                        // Clean up device watcher safely
+                        lock (_deviceLock)
                         {
-                            deviceEntry.StatusWatcher?.Dispose();
-                            _activeDevices.Remove(address);
+                            if (_activeDevices.TryGetValue(address, out var deviceEntry))
+                            {
+                                try
+                                {
+                                    deviceEntry.StatusWatcher?.Dispose();
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"Error disposing watcher for {address}: {ex.Message}");
+                                }
+                                _activeDevices.Remove(address);
+                            }
                         }
                     }
                     
                     // Handle new device connections
                     foreach (var (device, path, address, name) in devices)
                     {
-                        if (!_activeDevices.ContainsKey(address))
+                        bool isNewDevice = false;
+                        lock (_deviceLock)
+                        {
+                            isNewDevice = !_activeDevices.ContainsKey(address);
+                        }
+                        
+                        if (isNewDevice)
                         {
                             Console.WriteLine($"New device connected: {name} ({address})");
                             
@@ -326,37 +361,67 @@ namespace BluetoothSpeaker
                                     for (int i = 0; i < 10; i++) // Try for 30 seconds
                                     {
                                         await Task.Delay(3000);
-                                        var retryPlayerInfo = await _objectManager.FindMediaPlayerForDeviceAsync(path);
-                                        if (retryPlayerInfo.HasValue)
+                                        
+                                        // Check if device is still connected before retrying
+                                        bool deviceStillExists = false;
+                                        lock (_deviceLock)
                                         {
-                                            Console.WriteLine($"Media player found for {name} on retry {i + 1}");
-                                            try
+                                            deviceStillExists = _activeDevices.ContainsKey(address);
+                                        }
+                                        
+                                        if (!deviceStillExists)
+                                        {
+                                            Console.WriteLine($"Device {name} disconnected during retry, stopping search");
+                                            break;
+                                        }
+                                        
+                                        try
+                                        {
+                                            var retryPlayerInfo = await _objectManager.FindMediaPlayerForDeviceAsync(path);
+                                            if (retryPlayerInfo.HasValue)
                                             {
+                                                Console.WriteLine($"Media player found for {name} on retry {i + 1}");
+                                                
                                                 var retryWatcher = await retryPlayerInfo.Value.Player.WatchPropertiesAsync(changes =>
                                                 {
                                                     _ = Task.Run(() => HandleMediaPlayerChangesAsync(address, changes));
                                                 });
                                                 
-                                                // Update the device entry with the new watcher
-                                                if (_activeDevices.TryGetValue(address, out var currentEntry))
+                                                // Safely update the device entry with the new watcher
+                                                lock (_deviceLock)
                                                 {
-                                                    var updatedEntry = (currentEntry.Device, currentEntry.Path, retryPlayerInfo.Value.Player, retryPlayerInfo.Value.Path, retryWatcher);
-                                                    _activeDevices[address] = updatedEntry;
+                                                    if (_activeDevices.TryGetValue(address, out var currentEntry))
+                                                    {
+                                                        // Dispose old watcher if it exists
+                                                        currentEntry.StatusWatcher?.Dispose();
+                                                        
+                                                        var updatedEntry = (currentEntry.Device, currentEntry.Path, retryPlayerInfo.Value.Player, retryPlayerInfo.Value.Path, retryWatcher);
+                                                        _activeDevices[address] = updatedEntry;
+                                                        Console.WriteLine($"Media player watcher set up for {name} on retry");
+                                                    }
+                                                    else
+                                                    {
+                                                        // Device was removed while we were setting up, dispose the new watcher
+                                                        retryWatcher?.Dispose();
+                                                        Console.WriteLine($"Device {name} was removed during watcher setup");
+                                                    }
                                                 }
-                                                Console.WriteLine($"Media player watcher set up for {name} on retry");
                                                 break;
                                             }
-                                            catch (Exception ex)
-                                            {
-                                                Console.WriteLine($"Failed to set up media player watcher for {name} on retry: {ex.Message}");
-                                            }
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            Console.WriteLine($"Failed to set up media player watcher for {name} on retry {i + 1}: {ex.Message}");
                                         }
                                     }
                                 });
                             }
                             
                             var deviceEntry = (device, path, playerInfo?.Player, playerInfo?.Path, watcher);
-                            _activeDevices[address] = deviceEntry;
+                            lock (_deviceLock)
+                            {
+                                _activeDevices[address] = deviceEntry;
+                            }
                             
                             // Welcome message
                             await GenerateCommentForDeviceAsync(address, $"Oh great, {name} just connected. Let me guess, you're about to blast some questionable music choices through me?");
@@ -1122,8 +1187,16 @@ echo ""Audio routing configured - BlueALSA will now route audio to speakers""
         public async Task ShowStatusAsync()
         {
             Console.WriteLine("=== BLUETOOTH SPEAKER STATUS ===");
-            Console.WriteLine($"Active devices: {_activeDevices.Count}");
-            Console.WriteLine($"Device sessions: {_deviceSessions.Count}");
+            
+            int activeDeviceCount, deviceSessionCount;
+            lock (_deviceLock)
+            {
+                activeDeviceCount = _activeDevices.Count;
+            }
+            deviceSessionCount = _deviceSessions.Count;
+            
+            Console.WriteLine($"Active devices: {activeDeviceCount}");
+            Console.WriteLine($"Device sessions: {deviceSessionCount}");
             
             foreach (var session in _deviceSessions.Values)
             {
@@ -1181,6 +1254,22 @@ echo ""Audio routing configured - BlueALSA will now route audio to speakers""
                 "Generate a snarky comment about someone testing the AI commentary system of their Bluetooth speaker.");
         }
 
-        // ...existing code...
+        public void Dispose()
+        {
+            if (_disposed) return;
+            
+            try
+            {
+                StopMonitoring();
+                _monitoringCancellation?.Dispose();
+                _httpClient?.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error during dispose: {ex.Message}");
+            }
+            
+            _disposed = true;
+        }
     }
 }
