@@ -198,6 +198,58 @@ private async Task GenerateCommentAboutTrackAsync(string trackInfo)
 
 The `BluetoothInterfaces.cs` file contains D-Bus interface definitions. You can extend these to access additional BlueZ features.
 
+## Auto-Start on Boot
+
+To make your Pi automatically start MeanSpeaker when it boots up (like a commercial speaker):
+
+### 1. Set Up Auto-Start
+```bash
+# Run the auto-start setup script
+chmod +x setup-autostart.sh
+./setup-autostart.sh
+```
+
+This will:
+- Create a systemd service
+- Enable auto-start on boot
+- Add user to required groups
+- Create control commands
+
+### 2. Control the Service
+```bash
+# Start MeanSpeaker
+meanspeaker start
+
+# Stop MeanSpeaker
+meanspeaker stop
+
+# Restart MeanSpeaker
+meanspeaker restart
+
+# Check status
+meanspeaker status
+
+# View live logs
+meanspeaker logs
+
+# Disable auto-start
+meanspeaker disable
+```
+
+### 3. Interactive Control Panel
+```bash
+# Run the interactive control script
+./meanspeaker-control.sh
+```
+
+### 4. Test Auto-Start
+```bash
+# Reboot to test
+sudo reboot
+```
+
+After reboot, MeanSpeaker should automatically start and be ready for Bluetooth connections!
+
 ## License
 
 This project is open source. Please ensure you comply with OpenAI's API terms of service when using the AI commentary features.
