@@ -30,13 +30,17 @@
             
             if (string.IsNullOrEmpty(apiKey))
             {
-                Console.Write("Enter your OpenAI API key: ");
+                Console.WriteLine("⚠️ OpenAI API key not found in environment.");
+                Console.WriteLine("You can either:");
+                Console.WriteLine("1. Set it as environment variable: export OPENAI_API_KEY=\"your-key\"");
+                Console.WriteLine("2. Enter it now (it won't be saved):");
+                Console.Write("Enter your OpenAI API key (or press Enter to skip AI features): ");
                 apiKey = Console.ReadLine()?.Trim();
                 
                 if (string.IsNullOrEmpty(apiKey))
                 {
-                    Console.WriteLine("OpenAI API key is required. Exiting...");
-                    return;
+                    Console.WriteLine("⚠️ No API key provided. AI commentary will be disabled.");
+                    apiKey = "dummy-key"; // Use dummy key to continue without AI features
                 }
             }
             

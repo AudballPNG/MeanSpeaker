@@ -49,10 +49,10 @@ namespace BluetoothSpeaker
                 return;
             }
 
-            // Ensure basic Bluetooth services are running
-            await EnsureBluetoothServicesAsync();
+            // Do complete automatic setup
+            await AutoSetupBluetoothSpeakerAsync();
             
-            Console.WriteLine("✅ Simple Bluetooth Speaker initialized!");
+            Console.WriteLine("✅ Simple Bluetooth Speaker initialized and ready!");
         }
 
         public Task StartMonitoringAsync()
@@ -128,6 +128,9 @@ namespace BluetoothSpeaker
                                     _connectedDeviceAddress = address;
                                     _connectedDeviceName = name;
                                     
+                                    // Ensure audio routing is ready
+                                    await EnsureAudioRoutingAsync();
+                                    
                                     // Welcome message
                                     await GenerateWelcomeCommentAsync(name);
                                 }
@@ -135,6 +138,21 @@ namespace BluetoothSpeaker
                             }
                         }
                     }
+                }
+                
+                // Alternative method: Check if any A2DP devices are connected via BlueALSA
+                var blualsaDevices = await RunCommandWithOutputAsync("bluealsa-aplay", "-l");
+                if (!string.IsNullOrEmpty(blualsaDevices) && blualsaDevices.Contains("A2DP"))
+                {
+                    if (string.IsNullOrEmpty(_connectedDeviceAddress))
+                    {
+                        Console.WriteLine("📱 A2DP device detected via BlueALSA");
+                        _connectedDeviceAddress = "detected";
+                        _connectedDeviceName = "Bluetooth Device";
+                        await EnsureAudioRoutingAsync();
+                        await GenerateWelcomeCommentAsync(_connectedDeviceName);
+                    }
+                    return;
                 }
                 
                 // No devices found - clear current device if we had one
@@ -168,6 +186,9 @@ namespace BluetoothSpeaker
                         Console.WriteLine($"🎵 Now playing: {trackInfo}");
                         _currentTrack = trackInfo;
                         
+                        // Ensure audio routing is working
+                        await EnsureAudioRoutingAsync();
+                        
                         // Generate AI commentary
                         if (ShouldGenerateComment())
                         {
@@ -178,7 +199,7 @@ namespace BluetoothSpeaker
                 }
                 
                 // Method 2: Try bluetoothctl as fallback
-                var playerInfo = await RunCommandWithOutputAsync("bluetoothctl", "player info");
+                var playerInfo = await RunCommandWithOutputAsync("bluetoothctl", "info " + _connectedDeviceAddress);
                 if (!string.IsNullOrEmpty(playerInfo))
                 {
                     var trackInfo = ParseBluetoothctlTrackInfo(playerInfo);
@@ -187,6 +208,9 @@ namespace BluetoothSpeaker
                     {
                         Console.WriteLine($"🎵 Now playing: {trackInfo}");
                         _currentTrack = trackInfo;
+                        
+                        // Ensure audio routing is working
+                        await EnsureAudioRoutingAsync();
                         
                         if (ShouldGenerateComment())
                         {
@@ -198,6 +222,24 @@ namespace BluetoothSpeaker
             catch (Exception ex)
             {
                 Console.WriteLine($"❌ Error checking track: {ex.Message}");
+            }
+        }
+
+        private async Task EnsureAudioRoutingAsync()
+        {
+            try
+            {
+                // Check if bluealsa-aplay is running
+                var status = await RunCommandWithOutputAsync("systemctl", "is-active bluealsa-aplay");
+                if (status.Trim() != "active")
+                {
+                    Console.WriteLine("🔧 Restarting audio routing...");
+                    await RunCommandSilentlyAsync("systemctl", "restart bluealsa-aplay");
+                }
+            }
+            catch
+            {
+                // Ignore errors - audio routing is best effort
             }
         }
 
@@ -328,6 +370,28 @@ namespace BluetoothSpeaker
             {
                 _lastCommentTime = DateTime.Now;
                 
+                // Skip AI if we don't have a real API key
+                if (_openAiApiKey == "dummy-key")
+                {
+                    var fallbackComments = new[]
+                    {
+                        "Nice music choice!",
+                        "That's an interesting track.",
+                        "Music is playing... how exciting.",
+                        "Another song, another dollar.",
+                        "I'd comment on this if I had AI powers."
+                    };
+                    
+                    var comment = fallbackComments[_random.Next(fallbackComments.Length)];
+                    Console.WriteLine($"\n🔊 SPEAKER SAYS: {comment}\n");
+                    
+                    if (_enableSpeech)
+                    {
+                        await SpeakAsync(comment);
+                    }
+                    return;
+                }
+                
                 var requestBody = new
                 {
                     model = "gpt-3.5-turbo",
@@ -370,10 +434,28 @@ namespace BluetoothSpeaker
                         }
                     }
                 }
+                else
+                {
+                    Console.WriteLine($"⚠️ AI service unavailable. Using fallback commentary.");
+                    var fallbackComments = new[]
+                    {
+                        "Hmm, that's a song alright.",
+                        "Music detected. Commenting... eventually.",
+                        "I would roast this but my wit generator is broken."
+                    };
+                    var comment = fallbackComments[_random.Next(fallbackComments.Length)];
+                    Console.WriteLine($"\n🔊 SPEAKER SAYS: {comment}\n");
+                    if (_enableSpeech) await SpeakAsync(comment);
+                }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"❌ Error generating comment: {ex.Message}");
+                // Use fallback on error
+                if (_openAiApiKey != "dummy-key")
+                {
+                    Console.WriteLine("🔊 SPEAKER SAYS: Something went wrong with my wit generator!");
+                }
             }
         }
 
@@ -399,28 +481,143 @@ namespace BluetoothSpeaker
             }
         }
 
-        private async Task EnsureBluetoothServicesAsync()
+        private async Task AutoSetupBluetoothSpeakerAsync()
         {
             try
             {
-                Console.WriteLine("🔧 Ensuring Bluetooth services are running...");
+                Console.WriteLine("🔧 Auto-configuring Bluetooth speaker (this may take a moment)...");
                 
-                // Start basic services
-                await RunCommandAsync("systemctl", "start bluetooth");
-                await RunCommandAsync("systemctl", "start bluealsa");
-                await RunCommandAsync("systemctl", "start bluealsa-aplay");
+                // Step 1: Install required packages silently
+                Console.WriteLine("📦 Installing required packages...");
+                await RunCommandSilentlyAsync("apt-get", "update");
+                await RunCommandSilentlyAsync("apt-get", "install -y bluetooth bluez bluez-tools bluealsa alsa-utils playerctl espeak");
                 
-                // Make discoverable
-                await RunCommandAsync("bluetoothctl", "power on");
-                await RunCommandAsync("bluetoothctl", "system-alias 'The Little Shit'");
-                await RunCommandAsync("bluetoothctl", "discoverable on");
-                await RunCommandAsync("bluetoothctl", "pairable on");
+                // Step 2: Configure Bluetooth main config
+                Console.WriteLine("� Configuring Bluetooth...");
+                var bluetoothConfig = @"[General]
+Name = The Little Shit
+Class = 0x240404
+DiscoverableTimeout = 0
+PairableTimeout = 0
+
+[Policy]
+AutoEnable=true";
                 
-                Console.WriteLine("✅ Bluetooth services configured");
+                await WriteConfigFileAsync("/etc/bluetooth/main.conf", bluetoothConfig);
+                
+                // Step 3: Create BlueALSA service
+                Console.WriteLine("🎵 Setting up BlueALSA...");
+                var blualsaService = @"[Unit]
+Description=BlueALSA service
+After=bluetooth.service
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/bluealsa -p a2dp-sink
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target";
+                
+                await WriteConfigFileAsync("/etc/systemd/system/bluealsa.service", blualsaService);
+                
+                // Step 4: Create audio routing service (CRITICAL!)
+                Console.WriteLine("🔊 Setting up audio routing...");
+                var aplayService = @"[Unit]
+Description=BlueALSA audio routing
+After=bluealsa.service sound.target
+Requires=bluealsa.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/bluealsa-aplay --pcm-buffer-time=250000 00:00:00:00:00:00
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target";
+                
+                await WriteConfigFileAsync("/etc/systemd/system/bluealsa-aplay.service", aplayService);
+                
+                // Step 5: Enable and start all services
+                Console.WriteLine("🚀 Starting services...");
+                await RunCommandSilentlyAsync("systemctl", "daemon-reload");
+                await RunCommandSilentlyAsync("systemctl", "enable bluetooth");
+                await RunCommandSilentlyAsync("systemctl", "start bluetooth");
+                await RunCommandSilentlyAsync("systemctl", "enable bluealsa");
+                await RunCommandSilentlyAsync("systemctl", "start bluealsa");
+                await RunCommandSilentlyAsync("systemctl", "enable bluealsa-aplay");
+                await RunCommandSilentlyAsync("systemctl", "start bluealsa-aplay");
+                
+                // Step 6: Configure audio levels
+                Console.WriteLine("🔊 Setting audio levels...");
+                await RunCommandSilentlyAsync("amixer", "sset Master,0 90%");
+                await RunCommandSilentlyAsync("amixer", "sset PCM,0 90%");
+                
+                // Step 7: Make Bluetooth discoverable
+                Console.WriteLine("📡 Making Bluetooth discoverable...");
+                await RunCommandSilentlyAsync("bluetoothctl", "power on");
+                await RunCommandSilentlyAsync("bluetoothctl", "system-alias 'The Little Shit'");
+                await RunCommandSilentlyAsync("bluetoothctl", "discoverable on");
+                await RunCommandSilentlyAsync("bluetoothctl", "pairable on");
+                
+                Console.WriteLine("✅ Bluetooth speaker fully configured and ready!");
+                Console.WriteLine("📱 Your device should now be discoverable as 'The Little Shit'");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"⚠️ Warning: Could not configure Bluetooth: {ex.Message}");
+                Console.WriteLine($"⚠️ Setup warning: {ex.Message}");
+                Console.WriteLine("Some features may not work properly. Try running with sudo if needed.");
+            }
+        }
+
+        private async Task WriteConfigFileAsync(string filePath, string content)
+        {
+            try
+            {
+                // Try to write directly first
+                await File.WriteAllTextAsync(filePath, content);
+            }
+            catch
+            {
+                // If that fails, try with tee (works with sudo)
+                var tempFile = Path.GetTempFileName();
+                await File.WriteAllTextAsync(tempFile, content);
+                await RunCommandSilentlyAsync("cp", $"{tempFile} {filePath}");
+                File.Delete(tempFile);
+            }
+        }
+
+        private async Task RunCommandSilentlyAsync(string command, string arguments)
+        {
+            try
+            {
+                using var process = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = command,
+                        Arguments = arguments,
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true
+                    }
+                };
+                
+                process.Start();
+                await process.WaitForExitAsync();
+                
+                // If command failed and we need sudo, try with sudo
+                if (process.ExitCode != 0 && !command.StartsWith("sudo"))
+                {
+                    await RunCommandSilentlyAsync("sudo", $"{command} {arguments}");
+                }
+            }
+            catch
+            {
+                // Silently ignore failures - we want the app to work even if some setup fails
             }
         }
 

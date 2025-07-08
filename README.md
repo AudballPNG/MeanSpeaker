@@ -27,158 +27,117 @@ playerctl → Track Detection → AI Commentary → Text-to-Speech → Speakers
 
 ## Quick Setup
 
-### 1. Install .NET 8 on Raspberry Pi
-```bash
-wget https://dot.net/v1/dotnet-install.sh
-chmod +x dotnet-install.sh
-./dotnet-install.sh --channel 8.0
-echo 'export PATH=$PATH:$HOME/.dotnet' >> ~/.bashrc
-source ~/.bashrc
-```
+**Super Simple - Just run one command!**
 
-### 2. Clone and Setup
 ```bash
 git clone <your-repo-url>
 cd BluetoothSpeaker
-chmod +x simple-setup.sh speaker-control.sh
-sudo ./simple-setup.sh
+chmod +x run.sh
+./run.sh
 ```
 
-**The setup now includes auto-start on boot!** After running the setup script, the Bluetooth speaker will automatically start every time the Pi boots.
+**That's it!** The program will automatically:
+- Install .NET 8 if needed
+- Install all required packages (bluetooth, bluez, playerctl, espeak, etc.)
+- Configure Bluetooth services
+- Set up audio routing
+- Make your device discoverable as "The Little Shit"
+- Start monitoring for connections and music
 
-### 3. Set OpenAI API Key
+### Optional: Set OpenAI API Key for AI Commentary
 ```bash
-# Option 1: Use the setup helper
-./speaker-control.sh install-api-key
-
-# Option 2: Manual setup
 export OPENAI_API_KEY="your-api-key-here"
-echo 'export OPENAI_API_KEY="your-api-key-here"' >> ~/.bashrc
+./run.sh
 ```
 
-### 4. Reboot and Enjoy!
+If you don't provide an API key, the speaker will still work but with simple fallback commentary instead of AI-generated wit.
+
+### Alternative: Direct dotnet run
 ```bash
-sudo reboot
+dotnet run
 ```
 
-After reboot, your Pi will automatically:
-- Start the Bluetooth speaker service
-- Be discoverable as "The Little Shit"
-- Accept connections and provide AI commentary
-
-Simply connect your phone and play music!
-
-**Manual control (if needed):**
-```bash
-# Service management
-./speaker-control.sh status    # Check status
-./speaker-control.sh stop      # Stop service
-./speaker-control.sh start     # Start service
-./speaker-control.sh logs      # View logs
-
-# Manual run (for testing)
-./speaker-control.sh manual
-```
-
-## Service Management
-
-**The speaker service starts automatically on boot after setup!**
-
-Use the included control script for management:
-
-```bash
-# Check what's happening
-./speaker-control.sh status     # Service status
-./speaker-control.sh logs       # View real-time logs
-
-# Control the service
-./speaker-control.sh start      # Start service
-./speaker-control.sh stop       # Stop service
-./speaker-control.sh restart    # Restart service
-
-# Auto-start management
-./speaker-control.sh enable     # Enable auto-start (already done by setup)
-./speaker-control.sh disable    # Disable auto-start
-
-# Testing and troubleshooting
-./speaker-control.sh manual     # Run manually for testing
-```
-
-That's it! Your Pi is now discoverable as "The Little Shit".
+Both methods do the same automatic setup!
 
 ## Usage
 
-**After setup, your speaker runs automatically on boot!**
+**Just run and go!**
 
-1. **Connect your phone** to "The Little Shit" via Bluetooth
-2. **Play music** - it works like any normal Bluetooth speaker
-3. **Listen to the roasts** - the AI will occasionally comment on your music choices
+1. **Run the program**: `dotnet run`
+2. **Connect your phone** to "The Little Shit" via Bluetooth
+3. **Play music** - it works like any normal Bluetooth speaker
+4. **Listen to the commentary** - the AI will comment on your music choices
 
-### Service Control
+### Command Line Options
 ```bash
-./speaker-control.sh status    # Check if running
-./speaker-control.sh logs      # Watch live commentary
-./speaker-control.sh restart   # Restart if needed
+# Run with default settings (speech enabled)
+dotnet run
+
+# Run without speech (console only)
+dotnet run -- --no-speech
+
+# Run with specific voice
+dotnet run -- --voice en+f4
+
+# Run with male voice
+dotnet run -- --voice en+m3
 ```
 
-### Manual Testing
-While running manually (`./speaker-control.sh manual`), you can type:
+### Interactive Commands
+While the program is running, you can type:
 - `status` - Show connection and service status
 - `test` - Force generate a test comment
-- `quit` - Stop the application
+- `quit` or `exit` - Stop the application
 
 ## Troubleshooting
 
-### Service Not Starting
+### Program Won't Start
 ```bash
-# Check service status
-./speaker-control.sh status
+# Make sure .NET 8 is installed
+dotnet --version
 
-# Check logs for errors
-./speaker-control.sh logs
-
-# Restart services
-sudo systemctl restart bluetooth bluealsa bluealsa-aplay
-./speaker-control.sh restart
+# Try running with more verbose output
+dotnet run --verbosity detailed
 ```
 
 ### No Audio Playing
+The program automatically fixes audio routing, but if you still have issues:
 ```bash
-# Check audio services
-sudo systemctl status bluealsa bluealsa-aplay
+# Check if services are running
+systemctl status bluealsa bluealsa-aplay
 
-# Restart audio routing
-sudo systemctl restart bluealsa-aplay
+# Restart the program (it will fix services automatically)
+dotnet run
 ```
 
 ### No Device Detection
 ```bash
-# Check Bluetooth
+# Make sure Bluetooth is working
 bluetoothctl devices Connected
 bluetoothctl show
 
-# Make sure discoverable
-sudo bluetoothctl discoverable on
+# The program makes your device discoverable automatically
+# Just restart it if needed
 ```
 
 ### No Track Detection
+The program tries multiple methods to detect tracks. If it's not working:
 ```bash
 # Check if playerctl works
 playerctl status
 playerctl metadata
 
-# Check service logs
-./speaker-control.sh logs
+# Or just restart the program
+dotnet run
 ```
 
-### API Key Issues
+### Permission Issues
+If you get permission errors, you might need to run with sudo the first time:
 ```bash
-# Reinstall API key
-./speaker-control.sh install-api-key
-
-# Check environment
-echo $OPENAI_API_KEY
+sudo dotnet run
 ```
+
+After the first setup, you should be able to run without sudo.
 
 ## How It's Different
 
