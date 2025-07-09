@@ -811,7 +811,10 @@ namespace BluetoothSpeaker
                         case "piper":
                             // Use Piper neural TTS with enhanced fallback for different installation methods
                             var piperVoice = _ttsVoice.Contains("en_US") ? _ttsVoice : "en_US-lessac-medium";
-                            var piperModelPath = $"/home/pi/.local/share/piper/voices/{piperVoice}.onnx";
+                            
+                            // Try to find voice models in user's home directory
+                            var userHome = Environment.GetEnvironmentVariable("HOME") ?? "/home/" + Environment.UserName;
+                            var piperModelPath = $"{userHome}/.local/share/piper/voices/{piperVoice}.onnx";
                             
                             // Enhanced command with multiple fallback methods
                             var piperCommand = $@"

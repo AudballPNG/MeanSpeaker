@@ -16,30 +16,22 @@ Piper is a fast, local neural text-to-speech system developed by the Home Assist
 
 ## Installation
 
-Piper installation has been enhanced to handle the "externally-managed-environment" restriction on modern Python installations.
+Piper installation is handled automatically by the main setup script, with enhanced logic to handle the "externally-managed-environment" restriction on modern Python installations.
 
 ### Automatic Installation (Recommended)
 ```bash
-# Run the enhanced setup script
+# Run the main setup script - it handles everything
 ./simple-setup.sh
 ```
 
-### Manual Installation
-If automatic installation fails, use the dedicated Piper installer:
-```bash
-# Run the manual Piper installer
-chmod +x install-piper.sh
-./install-piper.sh
-```
+### What the Setup Script Does
 
-### Installation Methods
-
-The installer tries multiple methods in order:
+The setup script tries multiple installation methods automatically:
 
 1. **Standard pip**: `pip3 install piper-tts`
 2. **Break system packages**: `pip3 install --break-system-packages piper-tts`
-3. **Virtual environment**: Creates `/opt/piper-venv` and installs there
-4. **APT package**: `apt install python3-piper-tts` (if available)
+3. **APT package**: `apt install python3-piper-tts` (if available)
+4. **Virtual environment**: Creates `/opt/piper-venv` and installs there
 
 ### Universal Command
 
@@ -119,8 +111,8 @@ ls -la /usr/local/bin/piper          # Universal command
 ls -la /opt/piper-venv/              # Virtual environment
 python3 -c "import piper"            # Python module
 
-# Reinstall using manual installer
-./install-piper.sh
+# Re-run the setup script to reinstall
+./simple-setup.sh
 
 # Or try different methods manually:
 
@@ -141,11 +133,11 @@ echo "test" | piper-tts --output_file /tmp/test.wav
 ```
 
 ### Externally-Managed-Environment Error
-This error occurs on modern Python installations. Solutions:
+This error occurs on modern Python installations. The setup script handles this automatically, but if you see this error:
 
 ```bash
-# Use the manual installer (recommended)
-./install-piper.sh
+# Re-run the main setup script (recommended)
+./simple-setup.sh
 
 # Or manually use one of these approaches:
 sudo pip3 install --break-system-packages piper-tts

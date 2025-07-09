@@ -7,6 +7,10 @@ TEST_TEXT="Your music taste is questionable at best, but I'll play along."
 
 echo "Testing Piper neural TTS..."
 
+# Automatically detect user home directory
+USER_HOME="${HOME:-$(eval echo ~$USER)}"
+VOICE_MODEL_PATH="$USER_HOME/.local/share/piper/voices/en_US-lessac-medium.onnx"
+
 # Test the piper alias (should handle all installation methods)
 if command -v piper &> /dev/null; then
     echo "✅ Piper alias found, testing..."
@@ -14,9 +18,11 @@ if command -v piper &> /dev/null; then
     echo "✅ Piper (alias) test complete"
     
     # Test with specific voice if available
-    if [ -f "/home/pi/.local/share/piper/voices/en_US-lessac-medium.onnx" ]; then
-        echo "$TEST_TEXT" | piper --model /home/pi/.local/share/piper/voices/en_US-lessac-medium.onnx --output_file /tmp/test_piper2.wav 2>/dev/null && aplay /tmp/test_piper2.wav 2>/dev/null
+    if [ -f "$VOICE_MODEL_PATH" ]; then
+        echo "$TEST_TEXT" | piper --model "$VOICE_MODEL_PATH" --output_file /tmp/test_piper2.wav 2>/dev/null && aplay /tmp/test_piper2.wav 2>/dev/null
         echo "✅ Piper (specific model) test complete"
+    else
+        echo "ℹ️ Voice model not found at: $VOICE_MODEL_PATH"
     fi
 elif command -v piper-tts &> /dev/null; then
     # Direct piper-tts command

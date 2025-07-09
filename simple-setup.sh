@@ -90,8 +90,16 @@ sudo chmod +x /usr/local/bin/piper
 
 # Download default Piper voice models
 echo "📥 Downloading Piper voice models..."
-mkdir -p /home/pi/.local/share/piper/voices
-cd /home/pi/.local/share/piper/voices
+
+# Automatically detect the user and home directory
+CURRENT_USER="${SUDO_USER:-$USER}"
+USER_HOME=$(eval echo ~$CURRENT_USER)
+
+echo "🔍 Detected user: $CURRENT_USER"
+echo "🏠 User home: $USER_HOME"
+
+mkdir -p "$USER_HOME/.local/share/piper/voices"
+cd "$USER_HOME/.local/share/piper/voices"
 
 # Download popular English voices
 wget -q https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx
@@ -99,9 +107,10 @@ wget -q https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/less
 wget -q https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/ryan/medium/en_US-ryan-medium.onnx
 wget -q https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/ryan/medium/en_US-ryan-medium.onnx.json
 
-# Set proper permissions
-chown -R pi:pi /home/pi/.local/share/piper/
-cd /home/pi
+# Set proper permissions for the detected user
+echo "🔐 Setting permissions for user: $CURRENT_USER"
+chown -R "$CURRENT_USER:$CURRENT_USER" "$USER_HOME/.local/share/piper/" 2>/dev/null || true
+cd "$USER_HOME"
 
 # Enable and start Bluetooth
 echo "🔵 Configuring Bluetooth..."
@@ -287,6 +296,21 @@ sudo chmod +x /home/$ACTUAL_USER/BluetoothSpeaker/speaker-control.sh
 echo "🚀 Enabling auto-start service..."
 sudo systemctl daemon-reload
 sudo systemctl enable bluetooth-speaker.service
+
+echo ""
+echo "🧪 Testing Piper TTS installation..."
+if command -v piper >/dev/null 2>&1; then
+    echo "✅ Piper command available"
+    # Quick test (silent)
+    if echo "Test" | piper --output_file /tmp/piper_setup_test.wav 2>/dev/null; then
+        echo "✅ Piper TTS working correctly"
+        rm -f /tmp/piper_setup_test.wav
+    else
+        echo "⚠️ Piper installed but test failed - check logs if TTS doesn't work"
+    fi
+else
+    echo "⚠️ Piper command not available - TTS may not work properly"
+fi
 
 echo ""
 echo "✅ Setup complete!"
