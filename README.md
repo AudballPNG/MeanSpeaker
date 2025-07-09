@@ -8,7 +8,7 @@ A Raspberry Pi Bluetooth speaker that plays your music AND provides snarky AI co
 
 - **🎵 Bluetooth A2DP Audio Sink**: Works like any normal Bluetooth speaker
 - **🤖 AI Music Commentary**: Uses OpenAI GPT to generate witty, sarcastic comments about your music
-- **🔊 Text-to-Speech**: Multiple TTS engines supported (Pico, Festival, eSpeak)
+- **🔊 Text-to-Speech**: Actually speaks the commentary out loud using espeak
 - **📱 Simple Setup**: One script setup, no complex configuration
 - **🔧 Reliable**: Uses proven command-line tools, not complex D-Bus event systems
 - **⚡ Auto-Start**: Runs automatically on boot after one-time setup
@@ -153,40 +153,19 @@ After the first setup, you should be able to run without sudo.
 - **📱 Device Detection**: `bluetoothctl devices Connected` every 2 seconds
 - **🎧 Track Detection**: `playerctl metadata` every 2 seconds  
 - **🤖 AI Commentary**: OpenAI GPT-3.5-turbo with snarky prompts
-- **🔊 Text-to-Speech**: Multiple TTS engines with fallback support
+- **🔊 Text-to-Speech**: espeak with configurable voices
 
 **Total complexity:** ~500 lines of C# vs 1500+ lines in the old version
 
-## Voice & TTS Options
+## Voice Options
 
 ```bash
-# TTS Engine Options
-dotnet run --tts pico       # Pico TTS (default, most natural)
-dotnet run --tts festival   # Festival TTS (good quality)
-dotnet run --tts espeak     # eSpeak TTS (lightweight, robotic)
-
-# Voice personalities (for eSpeak)
-dotnet run --voice en+f3    # Default female
-dotnet run --voice en+m3    # Male voice
-dotnet run --voice en+f4    # Different female
-
-# Combined options
-dotnet run --tts pico                    # Best quality
-dotnet run --tts espeak --voice en+m3    # Male eSpeak voice
-dotnet run --no-speech                   # Text only, no speech
+# Different voice personalities
+dotnet run --voice en+f3  # Default female
+dotnet run --voice en+m3  # Male voice
+dotnet run --voice en+f4  # Different female
+dotnet run --no-speech    # Text only, no speech
 ```
-
-**TTS Engine Quality Ranking:**
-1. **Pico TTS** - Most natural, developed by SVOX (used in Android)
-2. **Festival** - Good quality, University of Edinburgh
-3. **eSpeak** - Lightweight but robotic sounding
-
-**🎯 Test TTS Engines:**
-```bash
-chmod +x test-tts.sh
-./test-tts.sh
-```
-This script will play samples of each TTS engine so you can choose your favorite!
 
 ## Why This Approach Works
 

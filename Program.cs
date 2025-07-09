@@ -2,44 +2,11 @@
 {
     class Program
     {
-        static void ShowHelp()
-        {
-            Console.WriteLine("🎵 Snarky Bluetooth Speaker - Usage:");
-            Console.WriteLine();
-            Console.WriteLine("Commands:");
-            Console.WriteLine("  --help, -h           Show this help message");
-            Console.WriteLine("  --no-speech          Disable text-to-speech output");
-            Console.WriteLine("  --tts <engine>       Set TTS engine (pico, festival, espeak)");
-            Console.WriteLine("  --voice <voice>      Set espeak voice (e.g., en+f3, en+m3)");
-            Console.WriteLine();
-            Console.WriteLine("TTS Engines:");
-            Console.WriteLine("  pico      - SVOX Pico TTS (default, most natural)");
-            Console.WriteLine("  festival  - Festival TTS (good quality)");
-            Console.WriteLine("  espeak    - eSpeak TTS (lightweight, robotic)");
-            Console.WriteLine();
-            Console.WriteLine("Examples:");
-            Console.WriteLine("  BluetoothSpeaker                     # Use Pico TTS with default voice");
-            Console.WriteLine("  BluetoothSpeaker --tts espeak        # Use eSpeak TTS");
-            Console.WriteLine("  BluetoothSpeaker --tts pico          # Use Pico TTS");
-            Console.WriteLine("  BluetoothSpeaker --no-speech         # Text output only");
-            Console.WriteLine();
-            Console.WriteLine("Environment Variables:");
-            Console.WriteLine("  OPENAI_API_KEY       Your OpenAI API key for AI commentary");
-        }
-
         static async Task Main(string[] args)
         {
-            // Check for help
-            if (args.Contains("--help") || args.Contains("-h"))
-            {
-                ShowHelp();
-                return;
-            }
-            
             // Check for speech configuration
             bool enableSpeech = !args.Contains("--no-speech");
             string ttsVoice = "en+f3"; // Default female voice
-            string ttsEngine = "pico"; // Default to Pico TTS for better quality
             
             // Parse voice parameter if provided
             for (int i = 0; i < args.Length - 1; i++)
@@ -47,10 +14,7 @@
                 if (args[i] == "--voice")
                 {
                     ttsVoice = args[i + 1];
-                }
-                else if (args[i] == "--tts" || args[i] == "--tts-engine")
-                {
-                    ttsEngine = args[i + 1];
+                    break;
                 }
             }
             
@@ -58,7 +22,6 @@
             Console.WriteLine($"Speech: {(enableSpeech ? "Enabled" : "Disabled")}");
             if (enableSpeech)
             {
-                Console.WriteLine($"TTS Engine: {ttsEngine}");
                 Console.WriteLine($"Voice: {ttsVoice}");
             }
             
@@ -81,7 +44,7 @@
                 }
             }
             
-            using var monitor = new MusicMonitor(apiKey, enableSpeech, ttsVoice, ttsEngine);
+            using var monitor = new MusicMonitor(apiKey, enableSpeech, ttsVoice);
             
             try
             {

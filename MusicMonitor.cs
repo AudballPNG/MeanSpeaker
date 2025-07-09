@@ -19,7 +19,6 @@ namespace BluetoothSpeaker
         private readonly Random _random;
         private readonly bool _enableSpeech;
         private readonly string _ttsVoice;
-        private readonly string _ttsEngine;
         
         // Enhanced metadata services
         private BluetoothMetadataService? _bluetoothMetadataService;
@@ -47,14 +46,13 @@ namespace BluetoothSpeaker
         private readonly TimeSpan _audioCheckInterval = TimeSpan.FromSeconds(10);
         private bool _wasPlayingAudio = false;
 
-        public MusicMonitor(string openAiApiKey, bool enableSpeech = true, string ttsVoice = "en+f3", string ttsEngine = "pico")
+        public MusicMonitor(string openAiApiKey, bool enableSpeech = true, string ttsVoice = "en+f3")
         {
             _openAiApiKey = openAiApiKey ?? throw new ArgumentNullException(nameof(openAiApiKey));
             _httpClient = new HttpClient();
             _random = new Random();
             _enableSpeech = enableSpeech;
             _ttsVoice = ttsVoice;
-            _ttsEngine = ttsEngine;
         }
 
         public async Task InitializeAsync()
@@ -806,31 +804,7 @@ namespace BluetoothSpeaker
                 
                 if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
                 {
-                    switch (_ttsEngine.ToLower())
-                    {
-                        case "pico":
-                            bool picoSuccess = await TryPicoTtsAsync(cleanText);
-                            if (!picoSuccess)
-                            {
-                                Console.WriteLine("🔄 Pico TTS unavailable, falling back to espeak");
-                                await RunCommandAsync("espeak", $"-v {_ttsVoice} -s 160 -a 200 \"{cleanText}\"");
-                            }
-                            break;
-                        
-                        case "festival":
-                            bool festivalSuccess = await TryFestivalTtsAsync(cleanText);
-                            if (!festivalSuccess)
-                            {
-                                Console.WriteLine("🔄 Festival unavailable, falling back to espeak");
-                                await RunCommandAsync("espeak", $"-v {_ttsVoice} -s 160 -a 200 \"{cleanText}\"");
-                            }
-                            break;
-                        
-                        case "espeak":
-                        default:
-                            await RunCommandAsync("espeak", $"-v {_ttsVoice} -s 160 -a 200 \"{cleanText}\"");
-                            break;
-                    }
+                    await RunCommandAsync("espeak", $"-v {_ttsVoice} -s 160 -a 200 \"{cleanText}\"");
                 }
                 else
                 {
@@ -841,50 +815,6 @@ namespace BluetoothSpeaker
             catch (Exception ex)
             {
                 Console.WriteLine($"❌ Error speaking: {ex.Message}");
-            }
-        }
-
-        private async Task<bool> TryPicoTtsAsync(string text)
-        {
-            try
-            {
-                // Create a temporary WAV file
-                string tempFile = Path.GetTempFileName() + ".wav";
-                
-                // Generate speech with Pico TTS
-                await RunCommandAsync("pico2wave", $"-w \"{tempFile}\" \"{text}\"");
-                
-                if (File.Exists(tempFile))
-                {
-                    // Play the generated audio
-                    await RunCommandAsync("aplay", $"\"{tempFile}\"");
-                    
-                    // Clean up
-                    try { File.Delete(tempFile); } catch { }
-                    
-                    return true;
-                }
-                
-                return false;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private async Task<bool> TryFestivalTtsAsync(string text)
-        {
-            try
-            {
-                // Festival can speak directly or generate a file
-                // Using direct speech for simplicity
-                await RunCommandAsync("festival", $"--tts <<< \"{text}\"");
-                return true;
-            }
-            catch
-            {
-                return false;
             }
         }
 
@@ -961,7 +891,7 @@ namespace BluetoothSpeaker
             await RunCommandSilentlyAsync("apt-get", "update");
             
             // Enhanced package list for D-Bus metadata support
-            await RunCommandSilentlyAsync("apt-get", "install -y bluetooth bluez bluez-tools bluealsa alsa-utils playerctl espeak libttspico-utils");
+            await RunCommandSilentlyAsync("apt-get", "install -y bluetooth bluez bluez-tools bluealsa alsa-utils playerctl espeak");
             await RunCommandSilentlyAsync("apt-get", "install -y dbus dbus-user-session libdbus-1-dev");
             await RunCommandSilentlyAsync("apt-get", "install -y pulseaudio pulseaudio-module-bluetooth");
             
