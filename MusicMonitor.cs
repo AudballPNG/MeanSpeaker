@@ -19,6 +19,7 @@ namespace BluetoothSpeaker
         private readonly Random _random;
         private readonly bool _enableSpeech;
         private readonly string _ttsVoice;
+        private readonly string _ttsEngine;
         
         // Enhanced metadata services
         private BluetoothMetadataService? _bluetoothMetadataService;
@@ -31,7 +32,7 @@ namespace BluetoothSpeaker
         private string _connectedDeviceName = "";
         private string _connectedDeviceAddress = "";
         private DateTime _lastCommentTime = DateTime.MinValue;
-        private readonly TimeSpan _commentThrottle = TimeSpan.FromSeconds(5); // Reduced to 5 seconds for maximum meanness
+        private readonly TimeSpan _commentThrottle = TimeSpan.FromSeconds(10); // Reduced to 5 seconds for maximum meanness
         
         // Audio routing state to prevent unnecessary restarts
         private DateTime _lastAudioRoutingSetup = DateTime.MinValue;
@@ -46,13 +47,14 @@ namespace BluetoothSpeaker
         private readonly TimeSpan _audioCheckInterval = TimeSpan.FromSeconds(10);
         private bool _wasPlayingAudio = false;
 
-        public MusicMonitor(string openAiApiKey, bool enableSpeech = true, string ttsVoice = "en+f3")
+        public MusicMonitor(string openAiApiKey, bool enableSpeech = true, string ttsVoice = "en+f3", string ttsEngine = "piper")
         {
             _openAiApiKey = openAiApiKey ?? throw new ArgumentNullException(nameof(openAiApiKey));
             _httpClient = new HttpClient();
             _random = new Random();
             _enableSpeech = enableSpeech;
             _ttsVoice = ttsVoice;
+            _ttsEngine = ttsEngine;
         }
 
         public async Task InitializeAsync()
@@ -804,7 +806,25 @@ namespace BluetoothSpeaker
                 
                 if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
                 {
-                    await RunCommandAsync("espeak", $"-v {_ttsVoice} -s 160 -a 200 \"{cleanText}\"");
+                    switch (_ttsEngine.ToLower())
+                    {
+                        case "piper":
+                            // Use Piper neural TTS - check for different voice models
+                            var piperVoice = _ttsVoice.Contains("en_US") ? _ttsVoice : "en_US-lessac-medium";
+                            var piperModelPath = $"/home/pi/.local/share/piper/voices/{piperVoice}.onnx";
+                            await RunCommandAsync("bash", $"-c \"echo '{cleanText}' | piper --model {piperModelPath} --output_file /tmp/speech.wav && aplay /tmp/speech.wav\"");
+                            break;
+                        case "pico":
+                            await RunCommandAsync("bash", $"-c \"echo '{cleanText}' | pico2wave -w /tmp/speech.wav && aplay /tmp/speech.wav\"");
+                            break;
+                        case "festival":
+                            await RunCommandAsync("bash", $"-c \"echo '{cleanText}' | festival --tts\"");
+                            break;
+                        case "espeak":
+                        default:
+                            await RunCommandAsync("espeak", $"-v {_ttsVoice} -s 160 -a 200 \"{cleanText}\"");
+                            break;
+                    }
                 }
                 else
                 {
@@ -814,7 +834,20 @@ namespace BluetoothSpeaker
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ Error speaking: {ex.Message}");
+                Console.WriteLine($"❌ Error speaking with {_ttsEngine}: {ex.Message}");
+                // Fallback to espeak if the primary engine fails
+                if (_ttsEngine != "espeak" && RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+                {
+                    try
+                    {
+                        var fallbackText = text.Replace("\"", "").Replace("'", "").Trim();
+                        await RunCommandAsync("espeak", $"-v {_ttsVoice} -s 160 -a 200 \"{fallbackText}\"");
+                    }
+                    catch
+                    {
+                        Console.WriteLine("❌ Fallback to espeak also failed");
+                    }
+                }
             }
         }
 

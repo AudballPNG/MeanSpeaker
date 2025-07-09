@@ -8,7 +8,7 @@ A Raspberry Pi Bluetooth speaker that plays your music AND provides snarky AI co
 
 - **🎵 Bluetooth A2DP Audio Sink**: Works like any normal Bluetooth speaker
 - **🤖 AI Music Commentary**: Uses OpenAI GPT to generate witty, sarcastic comments about your music
-- **🔊 Text-to-Speech**: Actually speaks the commentary out loud using espeak
+- **🔊 Text-to-Speech**: High-quality TTS with multiple engines (Piper neural TTS, Pico, Festival, eSpeak)
 - **📱 Simple Setup**: One script setup, no complex configuration
 - **🔧 Reliable**: Uses proven command-line tools, not complex D-Bus event systems
 - **⚡ Auto-Start**: Runs automatically on boot after one-time setup
@@ -38,7 +38,7 @@ chmod +x run.sh
 
 **That's it!** The program will automatically:
 - Install .NET 8 if needed
-- Install all required packages (bluetooth, bluez, playerctl, espeak, etc.)
+- Install all required packages (bluetooth, bluez, playerctl, piper-tts, pico, festival, espeak, etc.)
 - Configure Bluetooth services
 - Set up audio routing
 - Make your device discoverable as "The Little Shit"
@@ -58,6 +58,56 @@ dotnet run
 ```
 
 Both methods do the same automatic setup!
+
+## TTS Engine Options
+
+The speaker now supports multiple text-to-speech engines with different quality and performance characteristics:
+
+### Available Engines
+
+| Engine | Quality | Speed | Resources | Best For |
+|--------|---------|-------|-----------|----------|
+| **Piper** | Excellent | Fast | Moderate | Best overall (default) |
+| **Pico** | Good | Fast | Low | Reliable fallback |
+| **Festival** | Good | Medium | Moderate | Traditional quality |
+| **eSpeak** | Fair | Very Fast | Very Low | Lightweight/robotic |
+
+### Usage Examples
+
+```bash
+# Use default Piper neural TTS
+./run.sh
+
+# Use specific TTS engine
+dotnet run -- --tts piper
+dotnet run -- --tts pico  
+dotnet run -- --tts festival
+dotnet run -- --tts espeak
+
+# Use specific voice models
+dotnet run -- --tts piper --voice en_US-lessac-medium   # Female Piper voice
+dotnet run -- --tts piper --voice en_US-ryan-medium     # Male Piper voice
+dotnet run -- --tts espeak --voice en+f3                # Female eSpeak voice
+
+# Disable speech entirely (text only)
+dotnet run -- --no-speech
+
+# Get help
+dotnet run -- --help
+```
+
+### Voice Models
+
+**Piper Neural TTS Voices:**
+- `en_US-lessac-medium` - Natural female voice (default)
+- `en_US-ryan-medium` - Natural male voice
+- `en_US-amy-medium` - Expressive female voice
+
+**eSpeak Voices:**
+- `en+f3` - Female voice #3
+- `en+m3` - Male voice #3  
+- `en+f4` - Female voice #4
+- `en+m4` - Male voice #4
 
 ## Usage
 
@@ -153,18 +203,25 @@ After the first setup, you should be able to run without sudo.
 - **📱 Device Detection**: `bluetoothctl devices Connected` every 2 seconds
 - **🎧 Track Detection**: `playerctl metadata` every 2 seconds  
 - **🤖 AI Commentary**: OpenAI GPT-3.5-turbo with snarky prompts
-- **🔊 Text-to-Speech**: espeak with configurable voices
+- **🔊 Text-to-Speech**: Multiple TTS engines (Piper neural, Pico, Festival, eSpeak)
 
 **Total complexity:** ~500 lines of C# vs 1500+ lines in the old version
 
 ## Voice Options
 
 ```bash
-# Different voice personalities
-dotnet run --voice en+f3  # Default female
-dotnet run --voice en+m3  # Male voice
-dotnet run --voice en+f4  # Different female
-dotnet run --no-speech    # Text only, no speech
+# Different TTS engines
+dotnet run -- --tts piper                    # Neural TTS (best quality, default)
+dotnet run -- --tts pico                     # Reliable traditional TTS  
+dotnet run -- --tts espeak                   # Fast, lightweight TTS
+dotnet run -- --tts festival                 # Traditional quality TTS
+
+# Different voice personalities (engine-specific)
+dotnet run -- --tts piper --voice en_US-lessac-medium   # Default female neural
+dotnet run -- --tts piper --voice en_US-ryan-medium     # Male neural voice
+dotnet run -- --tts espeak --voice en+f3                # Female robotic
+dotnet run -- --tts espeak --voice en+m3                # Male robotic
+dotnet run -- --no-speech                               # Text only, no speech
 ```
 
 ## Why This Approach Works

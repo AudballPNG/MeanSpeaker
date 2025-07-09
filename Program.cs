@@ -2,26 +2,73 @@
 {
     class Program
     {
+        static void ShowHelp()
+        {
+            Console.WriteLine("🎵 Snarky Bluetooth Speaker - Usage:");
+            Console.WriteLine();
+            Console.WriteLine("Commands:");
+            Console.WriteLine("  --help, -h           Show this help message");
+            Console.WriteLine("  --no-speech          Disable text-to-speech output");
+            Console.WriteLine("  --tts <engine>       Set TTS engine (piper, pico, festival, espeak)");
+            Console.WriteLine("  --voice <voice>      Set voice (piper models or espeak voices)");
+            Console.WriteLine();
+            Console.WriteLine("TTS Engines:");
+            Console.WriteLine("  piper     - Piper neural TTS (best quality, modern, default)");
+            Console.WriteLine("  pico      - SVOX Pico TTS (good quality, reliable fallback)");
+            Console.WriteLine("  festival  - Festival TTS (good quality)");
+            Console.WriteLine("  espeak    - eSpeak TTS (lightweight, robotic)");
+            Console.WriteLine();
+            Console.WriteLine("Voice Options:");
+            Console.WriteLine("  Piper voices: en_US-lessac-medium, en_US-ryan-medium, en_US-amy-medium");
+            Console.WriteLine("  eSpeak voices: en+f3, en+m3, en+f4, en+m4 (female/male variants)");
+            Console.WriteLine();
+            Console.WriteLine("Examples:");
+            Console.WriteLine("  BluetoothSpeaker                           # Use Piper TTS with default voice");
+            Console.WriteLine("  BluetoothSpeaker --tts espeak              # Use eSpeak TTS");
+            Console.WriteLine("  BluetoothSpeaker --tts piper --voice en_US-ryan-medium");
+            Console.WriteLine("  BluetoothSpeaker --no-speech               # Text output only");
+            Console.WriteLine();
+            Console.WriteLine("Environment Variables:");
+            Console.WriteLine("  OPENAI_API_KEY       Your OpenAI API key for AI commentary");
+        }
+
         static async Task Main(string[] args)
         {
+            // Check for help
+            if (args.Contains("--help") || args.Contains("-h"))
+            {
+                ShowHelp();
+                return;
+            }
+            
             // Check for speech configuration
             bool enableSpeech = !args.Contains("--no-speech");
-            string ttsVoice = "en+f3"; // Default female voice
+            string ttsVoice = "en_US-lessac-medium"; // Default Piper voice
+            string ttsEngine = "piper"; // Default to Piper TTS for best quality
             
-            // Parse voice parameter if provided
+            // Parse parameters
             for (int i = 0; i < args.Length - 1; i++)
             {
                 if (args[i] == "--voice")
                 {
                     ttsVoice = args[i + 1];
-                    break;
+                }
+                else if (args[i] == "--tts" || args[i] == "--tts-engine")
+                {
+                    ttsEngine = args[i + 1];
+                    // Adjust default voice based on engine
+                    if (ttsEngine == "espeak" && ttsVoice.StartsWith("en_US"))
+                    {
+                        ttsVoice = "en+f3"; // Default espeak voice
+                    }
                 }
             }
             
-            Console.WriteLine("🎵 Simple Snarky Bluetooth Speaker Starting Up...");
+            Console.WriteLine("🎵 Snarky Bluetooth Speaker Starting Up...");
             Console.WriteLine($"Speech: {(enableSpeech ? "Enabled" : "Disabled")}");
             if (enableSpeech)
             {
+                Console.WriteLine($"TTS Engine: {ttsEngine}");
                 Console.WriteLine($"Voice: {ttsVoice}");
             }
             
@@ -44,20 +91,21 @@
                 }
             }
             
-            using var monitor = new MusicMonitor(apiKey, enableSpeech, ttsVoice);
+            using var monitor = new MusicMonitor(apiKey, enableSpeech, ttsVoice, ttsEngine);
             
             try
             {
                 await monitor.InitializeAsync();
                 await monitor.StartMonitoringAsync();
                 
-                Console.WriteLine("\n🎵 Simple Bluetooth Speaker is running!");
+                Console.WriteLine("\n🎵 Snarky Bluetooth Speaker is running!");
                 Console.WriteLine("Commands:");
                 Console.WriteLine("  'quit' or 'exit' - Stop the application");
                 Console.WriteLine("  'status' - Show current status");
                 Console.WriteLine("  'test' - Generate a test comment");
                 Console.WriteLine("  'debug' - Debug track detection");
                 Console.WriteLine("  'sync' - Force sync track detection");
+                Console.WriteLine("  'help' - Show startup help");
                 Console.WriteLine("\nConnect your phone and start playing music to hear my commentary...\n");
                 
                 string? input;
@@ -83,6 +131,9 @@
                             Console.WriteLine("🔄 Force syncing track detection...");
                             await monitor.ForceSyncTrackDetectionAsync();
                             break;
+                        case "help":
+                            ShowHelp();
+                            break;
                         case "quit":
                         case "exit":
                             Console.WriteLine("👋 Shutting down...");
@@ -96,6 +147,7 @@
                             Console.WriteLine("  'test' - Generate a test comment");
                             Console.WriteLine("  'debug' - Debug track detection");
                             Console.WriteLine("  'sync' - Force sync track detection");
+                            Console.WriteLine("  'help' - Show startup help");
                             break;
                     }
                 }

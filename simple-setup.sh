@@ -18,11 +18,33 @@ sudo apt-get install -y \
     alsa-utils \
     playerctl \
     espeak \
+    festival \
+    libttspico-utils \
     pulseaudio \
     pulseaudio-module-bluetooth \
     dbus \
     dbus-user-session \
-    libdbus-1-dev
+    libdbus-1-dev \
+    python3-pip
+
+# Install Piper TTS
+echo "🗣️ Installing Piper neural TTS..."
+sudo pip3 install piper-tts
+
+# Download default Piper voice models
+echo "📥 Downloading Piper voice models..."
+mkdir -p /home/pi/.local/share/piper/voices
+cd /home/pi/.local/share/piper/voices
+
+# Download popular English voices
+wget -q https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx
+wget -q https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json
+wget -q https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/ryan/medium/en_US-ryan-medium.onnx
+wget -q https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/ryan/medium/en_US-ryan-medium.onnx.json
+
+# Set proper permissions
+chown -R pi:pi /home/pi/.local/share/piper/
+cd /home/pi
 
 # Enable and start Bluetooth
 echo "🔵 Configuring Bluetooth..."
