@@ -6,22 +6,43 @@ echo "🗣️ Testing all TTS engines..."
 TEST_TEXT="Your music taste is questionable at best, but I'll play along."
 
 echo "Testing Piper neural TTS..."
+
+# Test the piper alias (should handle all installation methods)
 if command -v piper &> /dev/null; then
-    # Test with default voice
+    echo "✅ Piper alias found, testing..."
     echo "$TEST_TEXT" | piper --output_file /tmp/test_piper.wav 2>/dev/null && aplay /tmp/test_piper.wav 2>/dev/null
-    echo "✅ Piper (default) test complete"
+    echo "✅ Piper (alias) test complete"
     
     # Test with specific voice if available
     if [ -f "/home/pi/.local/share/piper/voices/en_US-lessac-medium.onnx" ]; then
         echo "$TEST_TEXT" | piper --model /home/pi/.local/share/piper/voices/en_US-lessac-medium.onnx --output_file /tmp/test_piper2.wav 2>/dev/null && aplay /tmp/test_piper2.wav 2>/dev/null
         echo "✅ Piper (specific model) test complete"
     fi
+elif command -v piper-tts &> /dev/null; then
+    # Direct piper-tts command
+    echo "✅ piper-tts command found, testing..."
+    echo "$TEST_TEXT" | piper-tts --output_file /tmp/test_piper.wav 2>/dev/null && aplay /tmp/test_piper.wav 2>/dev/null
+    echo "✅ Piper-tts test complete"
 elif python3 -c "import piper" 2>/dev/null; then
-    # Fallback to python module
+    # Python module
+    echo "✅ Piper python module found, testing..."
     echo "$TEST_TEXT" | python3 -m piper --output_file /tmp/test_piper.wav 2>/dev/null && aplay /tmp/test_piper.wav 2>/dev/null
     echo "✅ Piper (python module) test complete"
+elif [ -x "/opt/piper-venv/bin/python" ]; then
+    # Virtual environment
+    echo "✅ Piper virtual environment found, testing..."
+    echo "$TEST_TEXT" | /opt/piper-venv/bin/python -m piper --output_file /tmp/test_piper.wav 2>/dev/null && aplay /tmp/test_piper.wav 2>/dev/null
+    echo "✅ Piper (virtual env) test complete"
 else
     echo "❌ Piper not found - run simple-setup.sh to install"
+    echo "ℹ️ Installation issue detected:"
+    if pip3 list 2>/dev/null | grep -q piper; then
+        echo "   - Piper package is installed but not accessible"
+        echo "   - Try: sudo pip3 install --break-system-packages piper-tts"
+    else
+        echo "   - Piper package not installed"
+        echo "   - This may be due to externally-managed-environment restriction"
+    fi
 fi
 
 echo ""

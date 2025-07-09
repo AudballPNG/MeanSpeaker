@@ -16,21 +16,44 @@ Piper is a fast, local neural text-to-speech system developed by the Home Assist
 
 ## Installation
 
-Piper is automatically installed by the setup script (`simple-setup.sh`):
+Piper installation has been enhanced to handle the "externally-managed-environment" restriction on modern Python installations.
+
+### Automatic Installation (Recommended)
+```bash
+# Run the enhanced setup script
+./simple-setup.sh
+```
+
+### Manual Installation
+If automatic installation fails, use the dedicated Piper installer:
+```bash
+# Run the manual Piper installer
+chmod +x install-piper.sh
+./install-piper.sh
+```
+
+### Installation Methods
+
+The installer tries multiple methods in order:
+
+1. **Standard pip**: `pip3 install piper-tts`
+2. **Break system packages**: `pip3 install --break-system-packages piper-tts`
+3. **Virtual environment**: Creates `/opt/piper-venv` and installs there
+4. **APT package**: `apt install python3-piper-tts` (if available)
+
+### Universal Command
+
+A universal `piper` command is created that automatically detects and uses the available installation method:
 
 ```bash
-# Installed via pip
-sudo pip3 install piper-tts
+# The piper command automatically handles:
+# - Direct piper-tts command
+# - Python module (python3 -m piper)
+# - Virtual environment (/opt/piper-venv/bin/python -m piper)
+# - Wrapper scripts
 
-# Create convenient piper command alias
-sudo tee /usr/local/bin/piper > /dev/null << 'EOF'
-#!/bin/bash
-python3 -m piper "$@"
-EOF
-sudo chmod +x /usr/local/bin/piper
-
-# Voice models downloaded automatically
-wget https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/...
+# Usage remains the same:
+echo "Hello world" | piper --output_file test.wav
 ```
 
 ## Voice Models
@@ -91,21 +114,43 @@ If Piper fails for any reason, the system automatically falls back to eSpeak:
 which piper
 pip3 list | grep piper
 
-# Check if alias exists
-ls -la /usr/local/bin/piper
+# Check installation method
+ls -la /usr/local/bin/piper          # Universal command
+ls -la /opt/piper-venv/              # Virtual environment
+python3 -c "import piper"            # Python module
 
-# Reinstall if needed
-sudo pip3 install --upgrade piper-tts
+# Reinstall using manual installer
+./install-piper.sh
 
-# Recreate alias if missing
-sudo tee /usr/local/bin/piper > /dev/null << 'EOF'
-#!/bin/bash
-python3 -m piper "$@"
-EOF
-sudo chmod +x /usr/local/bin/piper
+# Or try different methods manually:
 
-# Test directly with python module
+# Method 1: Break system packages
+sudo pip3 install --break-system-packages piper-tts
+
+# Method 2: Virtual environment
+sudo python3 -m venv /opt/piper-venv
+sudo /opt/piper-venv/bin/pip install piper-tts
+
+# Method 3: APT (if available)
+sudo apt install python3-piper-tts
+
+# Test directly with different methods
 echo "test" | python3 -m piper --output_file /tmp/test.wav
+echo "test" | /opt/piper-venv/bin/python -m piper --output_file /tmp/test.wav
+echo "test" | piper-tts --output_file /tmp/test.wav
+```
+
+### Externally-Managed-Environment Error
+This error occurs on modern Python installations. Solutions:
+
+```bash
+# Use the manual installer (recommended)
+./install-piper.sh
+
+# Or manually use one of these approaches:
+sudo pip3 install --break-system-packages piper-tts
+sudo python3 -m venv /opt/piper-venv && sudo /opt/piper-venv/bin/pip install piper-tts
+sudo apt install python3-piper-tts  # if available
 ```
 
 ### Voice Models Missing

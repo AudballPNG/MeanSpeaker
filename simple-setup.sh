@@ -29,13 +29,62 @@ sudo apt-get install -y \
 
 # Install Piper TTS
 echo "🗣️ Installing Piper neural TTS..."
-sudo pip3 install piper-tts
 
-# Create a convenient alias for piper command
+# Handle the externally-managed-environment restriction
+if pip3 install piper-tts 2>&1 | grep -q "externally-managed-environment"; then
+    echo "⚠️ Python environment is externally managed, using alternative installation methods..."
+    
+    # Method 1: Try with --break-system-packages (if available)
+    echo "🔧 Trying with --break-system-packages flag..."
+    if sudo pip3 install --break-system-packages piper-tts; then
+        echo "✅ Piper installed with --break-system-packages"
+    else
+        # Method 2: Try installing via apt if available
+        echo "🔧 Trying apt package manager..."
+        sudo apt-get update
+        if sudo apt-get install -y python3-piper-tts 2>/dev/null; then
+            echo "✅ Piper installed via apt"
+        else
+            # Method 3: Create a virtual environment for system use
+            echo "🔧 Creating system virtual environment for Piper..."
+            sudo python3 -m venv /opt/piper-venv
+            sudo /opt/piper-venv/bin/pip install piper-tts
+            echo "✅ Piper installed in virtual environment"
+            
+            # Create wrapper script that uses the venv
+            sudo tee /usr/local/bin/piper-venv > /dev/null << 'EOF'
+#!/bin/bash
+/opt/piper-venv/bin/python -m piper "$@"
+EOF
+            sudo chmod +x /usr/local/bin/piper-venv
+        fi
+    fi
+else
+    echo "✅ Piper installed successfully"
+fi
+
+# Create a convenient alias for piper command that handles different installation methods
 echo "🔧 Setting up Piper command alias..."
 sudo tee /usr/local/bin/piper > /dev/null << 'EOF'
 #!/bin/bash
-python3 -m piper "$@"
+
+# Try different Piper installation methods
+if command -v piper-tts >/dev/null 2>&1; then
+    # Direct piper-tts command available
+    piper-tts "$@"
+elif python3 -c "import piper" >/dev/null 2>&1; then
+    # Python module available
+    python3 -m piper "$@"
+elif [ -x "/opt/piper-venv/bin/python" ]; then
+    # Virtual environment installation
+    /opt/piper-venv/bin/python -m piper "$@"
+elif [ -x "/usr/local/bin/piper-venv" ]; then
+    # Use the venv wrapper
+    /usr/local/bin/piper-venv "$@"
+else
+    echo "❌ Piper not found. Please install manually or re-run setup."
+    exit 1
+fi
 EOF
 sudo chmod +x /usr/local/bin/piper
 

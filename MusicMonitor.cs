@@ -809,12 +809,34 @@ namespace BluetoothSpeaker
                     switch (_ttsEngine.ToLower())
                     {
                         case "piper":
-                            // Use Piper neural TTS - check for different voice models
+                            // Use Piper neural TTS with enhanced fallback for different installation methods
                             var piperVoice = _ttsVoice.Contains("en_US") ? _ttsVoice : "en_US-lessac-medium";
                             var piperModelPath = $"/home/pi/.local/share/piper/voices/{piperVoice}.onnx";
                             
-                            // Try with the specific model first, fallback to default if model doesn't exist
-                            await RunCommandAsync("bash", $"-c \"if [ -f '{piperModelPath}' ]; then echo '{cleanText}' | piper --model {piperModelPath} --output_file /tmp/speech.wav && aplay /tmp/speech.wav; else echo '{cleanText}' | piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav; fi\"");
+                            // Enhanced command with multiple fallback methods
+                            var piperCommand = $@"
+                                # Try piper alias first (handles multiple installation methods)
+                                if command -v piper >/dev/null 2>&1; then
+                                    if [ -f '{piperModelPath}' ]; then
+                                        echo '{cleanText}' | piper --model {piperModelPath} --output_file /tmp/speech.wav && aplay /tmp/speech.wav
+                                    else
+                                        echo '{cleanText}' | piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav
+                                    fi
+                                # Try direct piper-tts command
+                                elif command -v piper-tts >/dev/null 2>&1; then
+                                    echo '{cleanText}' | piper-tts --output_file /tmp/speech.wav && aplay /tmp/speech.wav
+                                # Try python module
+                                elif python3 -c 'import piper' >/dev/null 2>&1; then
+                                    echo '{cleanText}' | python3 -m piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav
+                                # Try virtual environment
+                                elif [ -x '/opt/piper-venv/bin/python' ]; then
+                                    echo '{cleanText}' | /opt/piper-venv/bin/python -m piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav
+                                else
+                                    echo 'Piper not available, falling back to espeak'
+                                    espeak -v {_ttsVoice} -s 160 -a 200 '{cleanText}'
+                                fi
+                            ";
+                            await RunCommandAsync("bash", $"-c \"{piperCommand.Replace("\n", " ").Replace("  ", " ").Trim()}\"");
                             break;
                         case "pico":
                             await RunCommandAsync("bash", $"-c \"echo '{cleanText}' | pico2wave -w /tmp/speech.wav && aplay /tmp/speech.wav\"");
@@ -845,13 +867,35 @@ namespace BluetoothSpeaker
                     try
                     {
                         var fallbackText = text.Replace("\"", "").Replace("'", "").Trim();
-                        // Try python module directly
-                        await RunCommandAsync("bash", $"-c \"echo '{fallbackText}' | python3 -m piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav\"");
-                        return;
+                        
+                        // Try multiple Piper installation methods
+                        var fallbackCommands = new[]
+                        {
+                            $"echo '{fallbackText}' | python3 -m piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav",
+                            $"echo '{fallbackText}' | piper-tts --output_file /tmp/speech.wav && aplay /tmp/speech.wav",
+                            $"echo '{fallbackText}' | /opt/piper-venv/bin/python -m piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav"
+                        };
+                        
+                        bool piperWorked = false;
+                        foreach (var cmd in fallbackCommands)
+                        {
+                            try
+                            {
+                                await RunCommandAsync("bash", $"-c \"{cmd}\"");
+                                piperWorked = true;
+                                break;
+                            }
+                            catch
+                            {
+                                continue;
+                            }
+                        }
+                        
+                        if (piperWorked) return;
                     }
                     catch (Exception piperEx)
                     {
-                        Console.WriteLine($"❌ Piper python module also failed: {piperEx.Message}");
+                        Console.WriteLine($"❌ All Piper methods failed: {piperEx.Message}");
                     }
                 }
                 
