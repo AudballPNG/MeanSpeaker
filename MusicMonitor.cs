@@ -812,7 +812,9 @@ namespace BluetoothSpeaker
                             // Use Piper neural TTS - check for different voice models
                             var piperVoice = _ttsVoice.Contains("en_US") ? _ttsVoice : "en_US-lessac-medium";
                             var piperModelPath = $"/home/pi/.local/share/piper/voices/{piperVoice}.onnx";
-                            await RunCommandAsync("bash", $"-c \"echo '{cleanText}' | piper --model {piperModelPath} --output_file /tmp/speech.wav && aplay /tmp/speech.wav\"");
+                            
+                            // Try with the specific model first, fallback to default if model doesn't exist
+                            await RunCommandAsync("bash", $"-c \"if [ -f '{piperModelPath}' ]; then echo '{cleanText}' | piper --model {piperModelPath} --output_file /tmp/speech.wav && aplay /tmp/speech.wav; else echo '{cleanText}' | piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav; fi\"");
                             break;
                         case "pico":
                             await RunCommandAsync("bash", $"-c \"echo '{cleanText}' | pico2wave -w /tmp/speech.wav && aplay /tmp/speech.wav\"");
@@ -835,17 +837,36 @@ namespace BluetoothSpeaker
             catch (Exception ex)
             {
                 Console.WriteLine($"❌ Error speaking with {_ttsEngine}: {ex.Message}");
+                
+                // Enhanced fallback for Piper specifically
+                if (_ttsEngine.ToLower() == "piper" && RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+                {
+                    Console.WriteLine("🔄 Trying Piper fallback methods...");
+                    try
+                    {
+                        var fallbackText = text.Replace("\"", "").Replace("'", "").Trim();
+                        // Try python module directly
+                        await RunCommandAsync("bash", $"-c \"echo '{fallbackText}' | python3 -m piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav\"");
+                        return;
+                    }
+                    catch (Exception piperEx)
+                    {
+                        Console.WriteLine($"❌ Piper python module also failed: {piperEx.Message}");
+                    }
+                }
+                
                 // Fallback to espeak if the primary engine fails
                 if (_ttsEngine != "espeak" && RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
                 {
                     try
                     {
+                        Console.WriteLine("🔄 Falling back to espeak...");
                         var fallbackText = text.Replace("\"", "").Replace("'", "").Trim();
                         await RunCommandAsync("espeak", $"-v {_ttsVoice} -s 160 -a 200 \"{fallbackText}\"");
                     }
-                    catch
+                    catch (Exception espeakEx)
                     {
-                        Console.WriteLine("❌ Fallback to espeak also failed");
+                        Console.WriteLine($"❌ Fallback to espeak also failed: {espeakEx.Message}");
                     }
                 }
             }

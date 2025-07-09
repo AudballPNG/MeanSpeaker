@@ -31,6 +31,14 @@ sudo apt-get install -y \
 echo "🗣️ Installing Piper neural TTS..."
 sudo pip3 install piper-tts
 
+# Create a convenient alias for piper command
+echo "🔧 Setting up Piper command alias..."
+sudo tee /usr/local/bin/piper > /dev/null << 'EOF'
+#!/bin/bash
+python3 -m piper "$@"
+EOF
+sudo chmod +x /usr/local/bin/piper
+
 # Download default Piper voice models
 echo "📥 Downloading Piper voice models..."
 mkdir -p /home/pi/.local/share/piper/voices

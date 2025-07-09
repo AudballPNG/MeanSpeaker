@@ -7,10 +7,21 @@ TEST_TEXT="Your music taste is questionable at best, but I'll play along."
 
 echo "Testing Piper neural TTS..."
 if command -v piper &> /dev/null; then
-    echo "$TEST_TEXT" | piper --model en_US-lessac-medium --output_file /tmp/test_piper.wav 2>/dev/null && aplay /tmp/test_piper.wav 2>/dev/null
-    echo "✅ Piper test complete"
+    # Test with default voice
+    echo "$TEST_TEXT" | piper --output_file /tmp/test_piper.wav 2>/dev/null && aplay /tmp/test_piper.wav 2>/dev/null
+    echo "✅ Piper (default) test complete"
+    
+    # Test with specific voice if available
+    if [ -f "/home/pi/.local/share/piper/voices/en_US-lessac-medium.onnx" ]; then
+        echo "$TEST_TEXT" | piper --model /home/pi/.local/share/piper/voices/en_US-lessac-medium.onnx --output_file /tmp/test_piper2.wav 2>/dev/null && aplay /tmp/test_piper2.wav 2>/dev/null
+        echo "✅ Piper (specific model) test complete"
+    fi
+elif python3 -c "import piper" 2>/dev/null; then
+    # Fallback to python module
+    echo "$TEST_TEXT" | python3 -m piper --output_file /tmp/test_piper.wav 2>/dev/null && aplay /tmp/test_piper.wav 2>/dev/null
+    echo "✅ Piper (python module) test complete"
 else
-    echo "❌ Piper not found"
+    echo "❌ Piper not found - run simple-setup.sh to install"
 fi
 
 echo ""

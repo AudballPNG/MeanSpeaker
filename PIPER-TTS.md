@@ -22,6 +22,13 @@ Piper is automatically installed by the setup script (`simple-setup.sh`):
 # Installed via pip
 sudo pip3 install piper-tts
 
+# Create convenient piper command alias
+sudo tee /usr/local/bin/piper > /dev/null << 'EOF'
+#!/bin/bash
+python3 -m piper "$@"
+EOF
+sudo chmod +x /usr/local/bin/piper
+
 # Voice models downloaded automatically
 wget https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/...
 ```
@@ -84,8 +91,21 @@ If Piper fails for any reason, the system automatically falls back to eSpeak:
 which piper
 pip3 list | grep piper
 
+# Check if alias exists
+ls -la /usr/local/bin/piper
+
 # Reinstall if needed
 sudo pip3 install --upgrade piper-tts
+
+# Recreate alias if missing
+sudo tee /usr/local/bin/piper > /dev/null << 'EOF'
+#!/bin/bash
+python3 -m piper "$@"
+EOF
+sudo chmod +x /usr/local/bin/piper
+
+# Test directly with python module
+echo "test" | python3 -m piper --output_file /tmp/test.wav
 ```
 
 ### Voice Models Missing
