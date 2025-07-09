@@ -18,6 +18,9 @@ sudo apt-get install -y \
     alsa-utils \
     playerctl \
     espeak \
+    libttspico-utils \
+    festival \
+    festvox-kallpc16k \
     pulseaudio \
     pulseaudio-module-bluetooth \
     dbus \
