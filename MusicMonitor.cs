@@ -809,37 +809,66 @@ namespace BluetoothSpeaker
                     switch (_ttsEngine.ToLower())
                     {
                         case "piper":
-                            // Use Piper neural TTS with enhanced fallback for different installation methods
+                            // Use Piper neural TTS with simplified, more reliable command structure
                             var piperVoice = _ttsVoice.Contains("en_US") ? _ttsVoice : "en_US-lessac-medium";
                             
                             // Try to find voice models in user's home directory
                             var userHome = Environment.GetEnvironmentVariable("HOME") ?? "/home/" + Environment.UserName;
                             var piperModelPath = $"{userHome}/.local/share/piper/voices/{piperVoice}.onnx";
                             
-                            // Enhanced command with multiple fallback methods
-                            var piperCommand = $@"
-                                # Try piper alias first (handles multiple installation methods)
-                                if command -v piper >/dev/null 2>&1; then
-                                    if [ -f '{piperModelPath}' ]; then
-                                        echo '{cleanText}' | piper --model {piperModelPath} --output_file /tmp/speech.wav && aplay /tmp/speech.wav
-                                    else
-                                        echo '{cleanText}' | piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav
-                                    fi
-                                # Try direct piper-tts command
-                                elif command -v piper-tts >/dev/null 2>&1; then
-                                    echo '{cleanText}' | piper-tts --output_file /tmp/speech.wav && aplay /tmp/speech.wav
-                                # Try python module
-                                elif python3 -c 'import piper' >/dev/null 2>&1; then
-                                    echo '{cleanText}' | python3 -m piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav
-                                # Try virtual environment
-                                elif [ -x '/opt/piper-venv/bin/python' ]; then
-                                    echo '{cleanText}' | /opt/piper-venv/bin/python -m piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav
-                                else
-                                    echo 'Piper not available, falling back to espeak'
-                                    espeak -v {_ttsVoice} -s 160 -a 200 '{cleanText}'
-                                fi
-                            ";
-                            await RunCommandAsync("bash", $"-c \"{piperCommand.Replace("\n", " ").Replace("  ", " ").Trim()}\"");
+                            // Simplified approach - try each method one at a time
+                            bool piperWorked = false;
+                            
+                            // Method 1: Try piper command with specific model
+                            if (!piperWorked && File.Exists(piperModelPath))
+                            {
+                                try
+                                {
+                                    await RunCommandAsync("bash", $"-c \"echo '{cleanText}' | piper --model '{piperModelPath}' --output_file /tmp/speech.wav && aplay /tmp/speech.wav\"");
+                                    piperWorked = true;
+                                }
+                                catch { }
+                            }
+                            
+                            // Method 2: Try piper command without specific model
+                            if (!piperWorked)
+                            {
+                                try
+                                {
+                                    await RunCommandAsync("bash", $"-c \"echo '{cleanText}' | piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav\"");
+                                    piperWorked = true;
+                                }
+                                catch { }
+                            }
+                            
+                            // Method 3: Try python module
+                            if (!piperWorked)
+                            {
+                                try
+                                {
+                                    await RunCommandAsync("bash", $"-c \"echo '{cleanText}' | python3 -m piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav\"");
+                                    piperWorked = true;
+                                }
+                                catch { }
+                            }
+                            
+                            // Method 4: Try virtual environment
+                            if (!piperWorked)
+                            {
+                                try
+                                {
+                                    await RunCommandAsync("bash", $"-c \"echo '{cleanText}' | /opt/piper-venv/bin/python -m piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav\"");
+                                    piperWorked = true;
+                                }
+                                catch { }
+                            }
+                            
+                            // If all Piper methods failed, fall back to espeak
+                            if (!piperWorked)
+                            {
+                                Console.WriteLine("⚠️ All Piper methods failed, falling back to espeak");
+                                await RunCommandAsync("espeak", $"-v {_ttsVoice} -s 160 -a 200 \"{cleanText}\"");
+                            }
                             break;
                         case "pico":
                             await RunCommandAsync("bash", $"-c \"echo '{cleanText}' | pico2wave -w /tmp/speech.wav && aplay /tmp/speech.wav\"");
@@ -867,39 +896,35 @@ namespace BluetoothSpeaker
                 if (_ttsEngine.ToLower() == "piper" && RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
                 {
                     Console.WriteLine("🔄 Trying Piper fallback methods...");
-                    try
+                    
+                    // Simple fallback attempts
+                    var fallbackCommands = new[]
                     {
-                        var fallbackText = text.Replace("\"", "").Replace("'", "").Trim();
-                        
-                        // Try multiple Piper installation methods
-                        var fallbackCommands = new[]
+                        "python3 -m piper --output_file /tmp/speech_fallback.wav",
+                        "/opt/piper-venv/bin/python -m piper --output_file /tmp/speech_fallback.wav",
+                        "piper-tts --output_file /tmp/speech_fallback.wav"
+                    };
+                    
+                    bool piperWorked = false;
+                    var fallbackText = text.Replace("\"", "").Replace("'", "").Trim();
+                    
+                    foreach (var baseCmd in fallbackCommands)
+                    {
+                        try
                         {
-                            $"echo '{fallbackText}' | python3 -m piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav",
-                            $"echo '{fallbackText}' | piper-tts --output_file /tmp/speech.wav && aplay /tmp/speech.wav",
-                            $"echo '{fallbackText}' | /opt/piper-venv/bin/python -m piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav"
-                        };
-                        
-                        bool piperWorked = false;
-                        foreach (var cmd in fallbackCommands)
-                        {
-                            try
-                            {
-                                await RunCommandAsync("bash", $"-c \"{cmd}\"");
-                                piperWorked = true;
-                                break;
-                            }
-                            catch
-                            {
-                                continue;
-                            }
+                            var fullCmd = $"echo '{fallbackText}' | {baseCmd} && aplay /tmp/speech_fallback.wav";
+                            await RunCommandAsync("bash", $"-c \"{fullCmd}\"");
+                            piperWorked = true;
+                            break;
                         }
-                        
-                        if (piperWorked) return;
+                        catch
+                        {
+                            continue;
+                        }
                     }
-                    catch (Exception piperEx)
-                    {
-                        Console.WriteLine($"❌ All Piper methods failed: {piperEx.Message}");
-                    }
+                    
+                    if (piperWorked) return;
+                    Console.WriteLine("❌ All Piper fallback methods failed");
                 }
                 
                 // Fallback to espeak if the primary engine fails
@@ -1101,16 +1126,31 @@ namespace BluetoothSpeaker
                         FileName = command,
                         Arguments = arguments,
                         UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
                         CreateNoWindow = true
                     }
                 };
                 
                 process.Start();
+                var output = await process.StandardOutput.ReadToEndAsync();
+                var error = await process.StandardError.ReadToEndAsync();
                 await process.WaitForExitAsync();
+                
+                // Log errors for debugging TTS issues
+                if (process.ExitCode != 0)
+                {
+                    Console.WriteLine($"⚠️ Command failed: {command} {arguments}");
+                    if (!string.IsNullOrEmpty(error))
+                        Console.WriteLine($"   Error: {error.Trim()}");
+                    if (!string.IsNullOrEmpty(output))
+                        Console.WriteLine($"   Output: {output.Trim()}");
+                }
             }
-            catch
+            catch (Exception ex)
             {
-                // Ignore command failures for robustness
+                Console.WriteLine($"❌ Command exception: {command} {arguments} - {ex.Message}");
+                throw;
             }
         }
 

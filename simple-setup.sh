@@ -287,10 +287,22 @@ EOF
 
 # Copy project files to /home/$ACTUAL_USER/BluetoothSpeaker
 echo "📁 Copying project files..."
-sudo mkdir -p /home/$ACTUAL_USER/BluetoothSpeaker
-sudo cp -r . /home/$ACTUAL_USER/BluetoothSpeaker/
-sudo chown -R $ACTUAL_USER:$ACTUAL_USER /home/$ACTUAL_USER/BluetoothSpeaker
-sudo chmod +x /home/$ACTUAL_USER/BluetoothSpeaker/speaker-control.sh
+CURRENT_DIR=$(pwd)
+TARGET_DIR="/home/$ACTUAL_USER/BluetoothSpeaker"
+
+# Only copy if we're not already in the target directory
+if [ "$CURRENT_DIR" != "$TARGET_DIR" ]; then
+    sudo mkdir -p "$TARGET_DIR"
+    sudo cp -r * "$TARGET_DIR/" 2>/dev/null || true
+    sudo cp -r .[^.]* "$TARGET_DIR/" 2>/dev/null || true  # Copy hidden files
+    sudo chown -R $ACTUAL_USER:$ACTUAL_USER "$TARGET_DIR"
+    sudo chmod +x "$TARGET_DIR/speaker-control.sh"
+    echo "✅ Project files copied to $TARGET_DIR"
+else
+    echo "✅ Already running from target directory, skipping copy"
+    sudo chown -R $ACTUAL_USER:$ACTUAL_USER "$TARGET_DIR"
+    sudo chmod +x "$TARGET_DIR/speaker-control.sh"
+fi
 
 # Enable the service
 echo "🚀 Enabling auto-start service..."
