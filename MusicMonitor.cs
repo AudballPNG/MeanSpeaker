@@ -798,6 +798,10 @@ namespace BluetoothSpeaker
             }
         }
 
+        // Cache the working Piper command to avoid trying multiple methods each time
+        private string? _workingPiperCommand = null;
+        private string? _workingPiperModelPath = null;
+        
         private async Task SpeakAsync(string text)
         {
             try
@@ -809,66 +813,7 @@ namespace BluetoothSpeaker
                     switch (_ttsEngine.ToLower())
                     {
                         case "piper":
-                            // Use Piper neural TTS with simplified, more reliable command structure
-                            var piperVoice = _ttsVoice.Contains("en_US") ? _ttsVoice : "en_US-lessac-medium";
-                            
-                            // Try to find voice models in user's home directory
-                            var userHome = Environment.GetEnvironmentVariable("HOME") ?? "/home/" + Environment.UserName;
-                            var piperModelPath = $"{userHome}/.local/share/piper/voices/{piperVoice}.onnx";
-                            
-                            // Simplified approach - try each method one at a time
-                            bool piperWorked = false;
-                            
-                            // Method 1: Try piper command with specific model
-                            if (!piperWorked && File.Exists(piperModelPath))
-                            {
-                                try
-                                {
-                                    await RunCommandAsync("bash", $"-c \"echo '{cleanText}' | piper --model '{piperModelPath}' --output_file /tmp/speech.wav && aplay /tmp/speech.wav\"");
-                                    piperWorked = true;
-                                }
-                                catch { }
-                            }
-                            
-                            // Method 2: Try piper command without specific model
-                            if (!piperWorked)
-                            {
-                                try
-                                {
-                                    await RunCommandAsync("bash", $"-c \"echo '{cleanText}' | piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav\"");
-                                    piperWorked = true;
-                                }
-                                catch { }
-                            }
-                            
-                            // Method 3: Try python module
-                            if (!piperWorked)
-                            {
-                                try
-                                {
-                                    await RunCommandAsync("bash", $"-c \"echo '{cleanText}' | python3 -m piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav\"");
-                                    piperWorked = true;
-                                }
-                                catch { }
-                            }
-                            
-                            // Method 4: Try virtual environment
-                            if (!piperWorked)
-                            {
-                                try
-                                {
-                                    await RunCommandAsync("bash", $"-c \"echo '{cleanText}' | /opt/piper-venv/bin/python -m piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav\"");
-                                    piperWorked = true;
-                                }
-                                catch { }
-                            }
-                            
-                            // If all Piper methods failed, fall back to espeak
-                            if (!piperWorked)
-                            {
-                                Console.WriteLine("⚠️ All Piper methods failed, falling back to espeak");
-                                await RunCommandAsync("espeak", $"-v {_ttsVoice} -s 160 -a 200 \"{cleanText}\"");
-                            }
+                            await SpeakWithPiperOptimizedAsync(cleanText);
                             break;
                         case "pico":
                             await RunCommandAsync("bash", $"-c \"echo '{cleanText}' | pico2wave -w /tmp/speech.wav && aplay /tmp/speech.wav\"");
@@ -941,6 +886,195 @@ namespace BluetoothSpeaker
                         Console.WriteLine($"❌ Fallback to espeak also failed: {espeakEx.Message}");
                     }
                 }
+            }
+        }
+
+        private async Task SpeakWithPiperOptimizedAsync(string cleanText)
+        {
+            try
+            {
+                // First time setup: find the working Piper command and cache it
+                if (_workingPiperCommand == null)
+                {
+                    await DiscoverOptimalPiperSetupAsync();
+                }
+                
+                if (_workingPiperCommand != null)
+                {
+                    // Use the cached working command for much faster execution
+                    var startTime = DateTime.Now;
+                    
+                    // Method 1: Try direct audio streaming (fastest - no file I/O)
+                    if (_workingPiperCommand.Contains("--output_file"))
+                    {
+                        // Replace file output with stdout and pipe directly to aplay
+                        var streamCommand = _workingPiperCommand.Replace("--output_file /tmp/speech.wav && aplay /tmp/speech.wav", "--output_file - | aplay -");
+                        
+                        try
+                        {
+                            await RunCommandFastAsync("bash", $"-c \"echo '{cleanText}' | {streamCommand}\"");
+                            var duration = DateTime.Now - startTime;
+                            Console.WriteLine($"🚀 Piper TTS (streaming): {duration.TotalMilliseconds:F0}ms");
+                            return;
+                        }
+                        catch
+                        {
+                            // Fall back to file method if streaming fails
+                        }
+                    }
+                    
+                    // Method 2: Use cached command with optimized temporary file
+                    var optimizedCommand = _workingPiperCommand.Replace("/tmp/speech.wav", "/dev/shm/speech.wav"); // Use RAM disk for speed
+                    await RunCommandFastAsync("bash", $"-c \"echo '{cleanText}' | {optimizedCommand}\"");
+                    
+                    var totalDuration = DateTime.Now - startTime;
+                    Console.WriteLine($"🚀 Piper TTS (cached): {totalDuration.TotalMilliseconds:F0}ms");
+                }
+                else
+                {
+                    // No working Piper found, fall back to espeak
+                    Console.WriteLine("⚠️ No working Piper command found, falling back to espeak");
+                    await RunCommandAsync("espeak", $"-v {_ttsVoice} -s 160 -a 200 \"{cleanText}\"");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Optimized Piper failed: {ex.Message}");
+                // Fall back to espeak
+                try
+                {
+                    await RunCommandAsync("espeak", $"-v {_ttsVoice} -s 160 -a 200 \"{cleanText}\"");
+                }
+                catch (Exception espeakEx)
+                {
+                    Console.WriteLine($"❌ Espeak fallback also failed: {espeakEx.Message}");
+                }
+            }
+        }
+        
+        private async Task DiscoverOptimalPiperSetupAsync()
+        {
+            Console.WriteLine("🔍 Discovering optimal Piper TTS setup...");
+            
+            var piperVoice = _ttsVoice.Contains("en_US") ? _ttsVoice : "en_US-lessac-medium";
+            var userHome = Environment.GetEnvironmentVariable("HOME") ?? "/home/" + Environment.UserName;
+            var piperModelPath = $"{userHome}/.local/share/piper/voices/{piperVoice}.onnx";
+            
+            // Test commands in order of performance (fastest first)
+            var testCommands = new[]
+            {
+                // Direct piper with model (fastest if available)
+                File.Exists(piperModelPath) ? $"piper --model '{piperModelPath}' --output_file /tmp/speech.wav && aplay /tmp/speech.wav" : null,
+                
+                // Piper without specific model
+                "piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav",
+                
+                // Python module
+                "python3 -m piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav",
+                
+                // Virtual environment
+                "/opt/piper-venv/bin/python -m piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav"
+            };
+            
+            foreach (var command in testCommands)
+            {
+                if (string.IsNullOrEmpty(command)) continue;
+                
+                try
+                {
+                    Console.WriteLine($"🧪 Testing: {command.Split('|')[0].Trim()}...");
+                    
+                    // Test with a short phrase
+                    var testResult = await TestPiperCommandAsync(command, "test");
+                    if (testResult)
+                    {
+                        _workingPiperCommand = command;
+                        if (command.Contains("--model"))
+                        {
+                            _workingPiperModelPath = piperModelPath;
+                        }
+                        Console.WriteLine($"✅ Found working Piper setup: {command.Split(' ')[0]}");
+                        return;
+                    }
+                }
+                catch
+                {
+                    continue;
+                }
+            }
+            
+            Console.WriteLine("❌ No working Piper setup found");
+        }
+        
+        private async Task<bool> TestPiperCommandAsync(string command, string testText)
+        {
+            try
+            {
+                using var process = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = "bash",
+                        Arguments = $"-c \"echo '{testText}' | {command}\"",
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true
+                    }
+                };
+                
+                process.Start();
+                
+                // Set a short timeout for testing
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                try
+                {
+                    await process.WaitForExitAsync(timeoutCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    process.Kill();
+                    return false;
+                }
+                
+                return process.ExitCode == 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+        
+        // Faster version of RunCommandAsync that doesn't wait for output reading
+        private async Task RunCommandFastAsync(string command, string arguments)
+        {
+            try
+            {
+                using var process = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = command,
+                        Arguments = arguments,
+                        UseShellExecute = false,
+                        RedirectStandardOutput = false, // Don't redirect to avoid buffer overhead
+                        RedirectStandardError = false,  // Don't redirect to avoid buffer overhead
+                        CreateNoWindow = true
+                    }
+                };
+                
+                process.Start();
+                await process.WaitForExitAsync();
+                
+                if (process.ExitCode != 0)
+                {
+                    Console.WriteLine($"⚠️ Fast command failed: {command} {arguments} (exit code: {process.ExitCode})");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Fast command exception: {command} {arguments} - {ex.Message}");
+                throw;
             }
         }
 
