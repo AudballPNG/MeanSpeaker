@@ -102,6 +102,13 @@ namespace BluetoothSpeaker
             // Do complete automatic setup
             await AutoSetupBluetoothSpeakerAsync();
             
+            // Initialize TTS optimization during startup (not during first speech)
+            if (_ttsEngine.ToLower() == "piper" && RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            {
+                await InitializeOptimalPiperSetupAsync();
+                _piperSetupInitialized = true;
+            }
+            
             Console.WriteLine("✅ Enhanced Bluetooth Speaker initialized and ready!");
         }
 
@@ -798,9 +805,10 @@ namespace BluetoothSpeaker
             }
         }
 
-        // Cache the working Piper command to avoid trying multiple methods each time
+        // Pre-configured optimal Piper setup (no runtime discovery needed)
         private string? _workingPiperCommand = null;
         private string? _workingPiperModelPath = null;
+        private bool _piperSetupInitialized = false;
         
         private async Task SpeakAsync(string text)
         {
@@ -893,42 +901,32 @@ namespace BluetoothSpeaker
         {
             try
             {
-                // First time setup: find the working Piper command and cache it
-                if (_workingPiperCommand == null)
+                // Initialize optimal setup once at startup (not during first TTS call)
+                if (!_piperSetupInitialized)
                 {
-                    await DiscoverOptimalPiperSetupAsync();
+                    await InitializeOptimalPiperSetupAsync();
+                    _piperSetupInitialized = true;
                 }
                 
                 if (_workingPiperCommand != null)
                 {
-                    // Use the cached working command for much faster execution
                     var startTime = DateTime.Now;
                     
-                    // Method 1: Try direct audio streaming (fastest - no file I/O)
-                    if (_workingPiperCommand.Contains("--output_file"))
+                    // Use optimized file-based approach (streaming has broken pipe issues)
+                    // Use RAM disk for maximum speed
+                    var ramDiskFile = "/dev/shm/speech_optimized.wav";
+                    var optimizedCommand = _workingPiperCommand.Replace("/tmp/speech.wav", ramDiskFile);
+                    
+                    // Ensure the command uses reliable file output (not streaming)
+                    if (optimizedCommand.Contains("--output_file -"))
                     {
-                        // Replace file output with stdout and pipe directly to aplay
-                        var streamCommand = _workingPiperCommand.Replace("--output_file /tmp/speech.wav && aplay /tmp/speech.wav", "--output_file - | aplay -");
-                        
-                        try
-                        {
-                            await RunCommandFastAsync("bash", $"-c \"echo '{cleanText}' | {streamCommand}\"");
-                            var duration = DateTime.Now - startTime;
-                            Console.WriteLine($"🚀 Piper TTS (streaming): {duration.TotalMilliseconds:F0}ms");
-                            return;
-                        }
-                        catch
-                        {
-                            // Fall back to file method if streaming fails
-                        }
+                        optimizedCommand = optimizedCommand.Replace("--output_file - | aplay -", $"--output_file {ramDiskFile} && aplay {ramDiskFile}");
                     }
                     
-                    // Method 2: Use cached command with optimized temporary file
-                    var optimizedCommand = _workingPiperCommand.Replace("/tmp/speech.wav", "/dev/shm/speech.wav"); // Use RAM disk for speed
-                    await RunCommandFastAsync("bash", $"-c \"echo '{cleanText}' | {optimizedCommand}\"");
+                    await RunCommandFastAsync("bash", $"-c \"echo '{cleanText}' | {optimizedCommand} && rm -f {ramDiskFile}\"");
                     
                     var totalDuration = DateTime.Now - startTime;
-                    Console.WriteLine($"🚀 Piper TTS (cached): {totalDuration.TotalMilliseconds:F0}ms");
+                    Console.WriteLine($"🚀 Piper TTS (optimized): {totalDuration.TotalMilliseconds:F0}ms");
                 }
                 else
                 {
@@ -952,48 +950,46 @@ namespace BluetoothSpeaker
             }
         }
         
-        private async Task DiscoverOptimalPiperSetupAsync()
+        private async Task InitializeOptimalPiperSetupAsync()
         {
-            Console.WriteLine("🔍 Discovering optimal Piper TTS setup...");
+            Console.WriteLine("🔧 Initializing optimal Piper TTS setup...");
             
             var piperVoice = _ttsVoice.Contains("en_US") ? _ttsVoice : "en_US-lessac-medium";
             var userHome = Environment.GetEnvironmentVariable("HOME") ?? "/home/" + Environment.UserName;
             var piperModelPath = $"{userHome}/.local/share/piper/voices/{piperVoice}.onnx";
             
-            // Test commands in order of performance (fastest first)
-            var testCommands = new[]
+            // Pre-configured commands based on your working setup
+            var optimizedCommands = new[]
             {
-                // Direct piper with model (fastest if available)
-                File.Exists(piperModelPath) ? $"piper --model '{piperModelPath}' --output_file /tmp/speech.wav && aplay /tmp/speech.wav" : null,
+                // Your working setup: direct piper with model (most reliable)
+                File.Exists(piperModelPath) ? $"piper --model '{piperModelPath}' --output_file /dev/shm/speech_optimized.wav && aplay /dev/shm/speech_optimized.wav" : null,
                 
-                // Piper without specific model
-                "piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav",
+                // Fallback: piper without model
+                "piper --output_file /dev/shm/speech_optimized.wav && aplay /dev/shm/speech_optimized.wav",
                 
-                // Python module
-                "python3 -m piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav",
-                
-                // Virtual environment
-                "/opt/piper-venv/bin/python -m piper --output_file /tmp/speech.wav && aplay /tmp/speech.wav"
+                // Last resort: python module
+                "python3 -m piper --output_file /dev/shm/speech_optimized.wav && aplay /dev/shm/speech_optimized.wav"
             };
             
-            foreach (var command in testCommands)
+            // Quick validation (just check if piper command exists, don't actually test audio)
+            foreach (var command in optimizedCommands)
             {
                 if (string.IsNullOrEmpty(command)) continue;
                 
                 try
                 {
-                    Console.WriteLine($"🧪 Testing: {command.Split('|')[0].Trim()}...");
+                    var piperExecutable = command.Split(' ')[0];
                     
-                    // Test with a short phrase
-                    var testResult = await TestPiperCommandAsync(command, "test");
-                    if (testResult)
+                    // Quick check if the executable exists
+                    var whichResult = await RunCommandWithOutputAsync("which", piperExecutable);
+                    if (!string.IsNullOrEmpty(whichResult?.Trim()))
                     {
                         _workingPiperCommand = command;
                         if (command.Contains("--model"))
                         {
                             _workingPiperModelPath = piperModelPath;
                         }
-                        Console.WriteLine($"✅ Found working Piper setup: {command.Split(' ')[0]}");
+                        Console.WriteLine($"✅ Piper TTS ready: {piperExecutable}");
                         return;
                     }
                 }
@@ -1003,46 +999,7 @@ namespace BluetoothSpeaker
                 }
             }
             
-            Console.WriteLine("❌ No working Piper setup found");
-        }
-        
-        private async Task<bool> TestPiperCommandAsync(string command, string testText)
-        {
-            try
-            {
-                using var process = new Process
-                {
-                    StartInfo = new ProcessStartInfo
-                    {
-                        FileName = "bash",
-                        Arguments = $"-c \"echo '{testText}' | {command}\"",
-                        UseShellExecute = false,
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
-                        CreateNoWindow = true
-                    }
-                };
-                
-                process.Start();
-                
-                // Set a short timeout for testing
-                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-                try
-                {
-                    await process.WaitForExitAsync(timeoutCts.Token);
-                }
-                catch (OperationCanceledException)
-                {
-                    process.Kill();
-                    return false;
-                }
-                
-                return process.ExitCode == 0;
-            }
-            catch
-            {
-                return false;
-            }
+            Console.WriteLine("⚠️ Piper not found, will use espeak fallback");
         }
         
         // Faster version of RunCommandAsync that doesn't wait for output reading
@@ -1066,15 +1023,20 @@ namespace BluetoothSpeaker
                 process.Start();
                 await process.WaitForExitAsync();
                 
-                if (process.ExitCode != 0)
+                // Don't report broken pipe errors as failures - they're expected with audio streaming
+                if (process.ExitCode != 0 && process.ExitCode != 141) // 141 = SIGPIPE
                 {
                     Console.WriteLine($"⚠️ Fast command failed: {command} {arguments} (exit code: {process.ExitCode})");
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ Fast command exception: {command} {arguments} - {ex.Message}");
-                throw;
+                // Don't log broken pipe errors - they're normal with audio pipelines
+                if (!ex.Message.Contains("Broken pipe"))
+                {
+                    Console.WriteLine($"❌ Fast command exception: {command} {arguments} - {ex.Message}");
+                }
+                // Don't re-throw for TTS operations
             }
         }
 
