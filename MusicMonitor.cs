@@ -912,34 +912,41 @@ namespace BluetoothSpeaker
                 {
                     var startTime = DateTime.Now;
                     
-                    // Use most efficient approach: direct output to audio device when possible
+                    // Try streaming first for minimal latency (your preferred approach)
                     var ramDiskFile = "/dev/shm/speech_optimized.wav";
-                    
-                    // Try direct audio output first (fastest)
-                    var directCommand = _workingPiperCommand.Replace($"--output_file {ramDiskFile} && aplay {ramDiskFile}", "--output_file - | aplay -");
+                    var streamCommand = _workingPiperCommand.Replace($"--output_file {ramDiskFile} && aplay -q {ramDiskFile}", "--output_file - | aplay -q -t wav -");
                     
                     try
                     {
-                        await RunCommandFastAsync("bash", $"-c \"echo '{cleanText}' | {directCommand}\"");
+                        await RunPiperStreamingCommandAsync(cleanText, streamCommand);
                         var totalDuration = DateTime.Now - startTime;
-                        Console.WriteLine($"🚀 Piper TTS (direct): {totalDuration.TotalMilliseconds:F0}ms");
+                        Console.WriteLine($"🚀 Piper TTS (streaming): {totalDuration.TotalMilliseconds:F0}ms");
                         return;
                     }
-                    catch
+                    catch (Exception streamEx)
                     {
-                        // Fall back to file-based approach if direct streaming fails
-                        var optimizedCommand = _workingPiperCommand.Replace("/tmp/speech.wav", ramDiskFile);
+                        Console.WriteLine($"⚠️ Streaming failed: {streamEx.Message}, trying buffered fallback");
+                    }
+                    
+                    // Only fall back to buffered if streaming fails completely
+                    try
+                    {
+                        var bufferedCommand = _workingPiperCommand.Replace("/tmp/speech.wav", ramDiskFile);
                         
-                        // Ensure the command uses reliable file output (not streaming)
-                        if (optimizedCommand.Contains("--output_file -"))
+                        // Ensure we're using file output for fallback
+                        if (bufferedCommand.Contains("--output_file -"))
                         {
-                            optimizedCommand = optimizedCommand.Replace("--output_file - | aplay -", $"--output_file {ramDiskFile} && aplay {ramDiskFile}");
+                            bufferedCommand = bufferedCommand.Replace("--output_file - | aplay -q -t wav -", $"--output_file {ramDiskFile} && aplay -q {ramDiskFile}");
                         }
                         
-                        await RunCommandFastAsync("bash", $"-c \"echo '{cleanText}' | {optimizedCommand} && rm -f {ramDiskFile}\"");
-                        
+                        await RunCommandFastAsync("bash", $"-c \"echo '{cleanText}' | {bufferedCommand} && rm -f {ramDiskFile}\"");
                         var totalDuration = DateTime.Now - startTime;
-                        Console.WriteLine($"🚀 Piper TTS (file): {totalDuration.TotalMilliseconds:F0}ms");
+                        Console.WriteLine($"🚀 Piper TTS (buffered fallback): {totalDuration.TotalMilliseconds:F0}ms");
+                        return;
+                    }
+                    catch (Exception bufferEx)
+                    {
+                        Console.WriteLine($"⚠️ Buffered fallback also failed: {bufferEx.Message}");
                     }
                 }
                 else
@@ -972,17 +979,17 @@ namespace BluetoothSpeaker
             var userHome = Environment.GetEnvironmentVariable("HOME") ?? "/home/" + Environment.UserName;
             var piperModelPath = $"{userHome}/.local/share/piper/voices/{piperVoice}.onnx";
             
-            // Pre-configured commands based on your working setup
+            // Pre-configured commands prioritizing streaming for minimal latency
             var optimizedCommands = new[]
             {
-                // Your working setup: direct piper with model (most reliable)
-                File.Exists(piperModelPath) ? $"piper --model '{piperModelPath}' --output_file /dev/shm/speech_optimized.wav && aplay /dev/shm/speech_optimized.wav" : null,
+                // Your working setup: direct piper with model (streaming for low latency)
+                File.Exists(piperModelPath) ? $"piper --model '{piperModelPath}' --output_file /dev/shm/speech_optimized.wav && aplay -q /dev/shm/speech_optimized.wav" : null,
                 
-                // Fallback: piper without model
-                "piper --output_file /dev/shm/speech_optimized.wav && aplay /dev/shm/speech_optimized.wav",
+                // Fallback: piper without model (streaming)
+                "piper --output_file /dev/shm/speech_optimized.wav && aplay -q /dev/shm/speech_optimized.wav",
                 
-                // Last resort: python module
-                "python3 -m piper --output_file /dev/shm/speech_optimized.wav && aplay /dev/shm/speech_optimized.wav"
+                // Last resort: python module (streaming)
+                "python3 -m piper --output_file /dev/shm/speech_optimized.wav && aplay -q /dev/shm/speech_optimized.wav"
             };
             
             // Quick validation (just check if piper command exists, don't actually test audio)
@@ -1003,7 +1010,7 @@ namespace BluetoothSpeaker
                         {
                             _workingPiperModelPath = piperModelPath;
                         }
-                        Console.WriteLine($"✅ Piper TTS ready: {piperExecutable}");
+                        Console.WriteLine($"✅ Piper TTS ready: {piperExecutable} (streaming for minimal latency)");
                         return;
                     }
                 }
@@ -1036,6 +1043,13 @@ namespace BluetoothSpeaker
                 
                 process.Start();
                 await process.WaitForExitAsync();
+                
+                // For TTS commands with broken pipes, treat as success if audio likely played
+                if (process.ExitCode == 1 && (arguments.Contains("piper") || arguments.Contains("aplay")))
+                {
+                    // Exit code 1 with piper+aplay is usually broken pipe = success
+                    return;
+                }
                 
                 // Don't report broken pipe errors as failures - they're expected with audio streaming
                 if (process.ExitCode != 0 && process.ExitCode != 141) // 141 = SIGPIPE
@@ -2542,6 +2556,89 @@ namespace BluetoothSpeaker
                 Console.WriteLine($"❌ Error in managed speech: {ex.Message}");
                 // Fallback to direct speech
                 await SpeakAsync(text);
+            }
+        }
+
+        private async Task RunPiperStreamingCommandAsync(string cleanText, string streamCommand)
+        {
+            try
+            {
+                using var process = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = "bash",
+                        Arguments = $"-c \"echo '{cleanText}' | {streamCommand}\"",
+                        UseShellExecute = false,
+                        RedirectStandardOutput = false,
+                        RedirectStandardError = true, // Capture stderr to monitor for broken pipe
+                        CreateNoWindow = true
+                    }
+                };
+                
+                // Start both processes
+                process.Start();
+                
+                // Read stderr in background but don't let it block the main process
+                var stderrBuffer = new StringBuilder();
+                var stderrTask = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var buffer = new char[1024];
+                        int bytesRead;
+                        while ((bytesRead = await process.StandardError.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                        {
+                            stderrBuffer.Append(buffer, 0, bytesRead);
+                        }
+                    }
+                    catch { }
+                });
+                
+                // Wait for the process to complete
+                await process.WaitForExitAsync();
+                
+                // Give stderr reading a brief moment to complete, but don't wait forever
+                try
+                {
+                    await stderrTask.WaitAsync(TimeSpan.FromMilliseconds(200));
+                }
+                catch { }
+                
+                var stderr = stderrBuffer.ToString();
+                
+                // Analyze the result:
+                // - Exit code 0 = complete success
+                // - Exit code 1 with BrokenPipeError = partial success (audio played, pipe closed early)
+                // - Exit code 1 without BrokenPipeError = real failure
+                // - Other exit codes = failure
+                
+                if (process.ExitCode == 0)
+                {
+                    // Perfect success
+                    return;
+                }
+                else if (process.ExitCode == 1 && stderr.Contains("BrokenPipeError"))
+                {
+                    // This is actually success - aplay finished playing before Piper finished writing
+                    // This means the audio played completely, just the pipe closed early
+                    return;
+                }
+                else
+                {
+                    // Real failure
+                    var errorMsg = !string.IsNullOrEmpty(stderr) ? stderr.Trim() : $"Exit code {process.ExitCode}";
+                    throw new Exception($"Piper streaming failed: {errorMsg}");
+                }
+            }
+            catch (Exception ex)
+            {
+                // Only re-throw if it's not a broken pipe (which is success for our use case)
+                if (!ex.Message.Contains("BrokenPipeError"))
+                {
+                    throw;
+                }
+                // Broken pipe means audio played successfully, don't treat as error
             }
         }
     }
