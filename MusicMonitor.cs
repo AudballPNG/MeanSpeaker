@@ -805,6 +805,20 @@ namespace BluetoothSpeaker
             }
         }
 
+        /// <summary>
+        /// Properly escapes text for shell commands to prevent issues with periods and special characters.
+        /// This is CRITICAL for Piper TTS to read complete sentences instead of stopping at periods.
+        /// </summary>
+        private string EscapeTextForShell(string text)
+        {
+            // Remove problematic characters that could interfere with shell processing
+            var cleanText = text.Replace("\"", "").Replace("`", "").Trim();
+            
+            // Properly escape single quotes for bash: replace ' with '"'"'
+            // This allows single quotes to be included in the text without breaking the shell command
+            return cleanText.Replace("'", "'\"'\"'");
+        }
+
         // Pre-configured optimal Piper setup (no runtime discovery needed)
         private string? _workingPiperCommand = null;
         private string? _workingPiperModelPath = null;
@@ -824,10 +838,14 @@ namespace BluetoothSpeaker
                             await SpeakWithPiperOptimizedAsync(cleanText);
                             break;
                         case "pico":
-                            await RunCommandFastAsync("bash", $"-c \"echo '{cleanText}' | pico2wave -w /dev/shm/speech_fast.wav && aplay /dev/shm/speech_fast.wav && rm -f /dev/shm/speech_fast.wav\"");
+                            // Use proper shell escaping to avoid issues with periods and special characters
+                            var escapedTextPico = EscapeTextForShell(cleanText);
+                            await RunCommandFastAsync("bash", $"-c \"printf '%s' {escapedTextPico} | pico2wave -w /dev/shm/speech_fast.wav && aplay /dev/shm/speech_fast.wav && rm -f /dev/shm/speech_fast.wav\"");
                             break;
                         case "festival":
-                            await RunCommandFastAsync("bash", $"-c \"echo '{cleanText}' | festival --tts\"");
+                            // Use proper shell escaping to avoid issues with periods and special characters
+                            var escapedTextFestival = EscapeTextForShell(cleanText);
+                            await RunCommandFastAsync("bash", $"-c \"printf '%s' {escapedTextFestival} | festival --tts\"");
                             break;
                         case "espeak":
                         default:
@@ -865,7 +883,9 @@ namespace BluetoothSpeaker
                     {
                         try
                         {
-                            var fullCmd = $"echo '{fallbackText}' | {baseCmd} && aplay /tmp/speech_fallback.wav";
+                            // Use proper shell escaping to avoid issues with periods and special characters
+                            var escapedFallbackText = EscapeTextForShell(fallbackText);
+                            var fullCmd = $"printf '%s' {escapedFallbackText} | {baseCmd} && aplay /tmp/speech_fallback.wav";
                             await RunCommandAsync("bash", $"-c \"{fullCmd}\"");
                             piperWorked = true;
                             break;
@@ -937,8 +957,10 @@ namespace BluetoothSpeaker
                     // Only fall back to buffered if streaming fails completely
                     try
                     {
-                        // Use original command for buffered approach
-                        await RunCommandFastAsync("bash", $"-c \"echo '{cleanText}' | {_workingPiperCommand} && rm -f {ramDiskFile}\"");
+                        // Use proper shell escaping for buffered approach
+                        var escapedText = EscapeTextForShell(cleanText);
+                        var bufferedCommand = $"printf '%s' {escapedText} | {_workingPiperCommand} && rm -f {ramDiskFile}";
+                        await RunCommandFastAsync("bash", $"-c \"{bufferedCommand}\"");
                         var totalDuration = DateTime.Now - startTime;
                         Console.WriteLine($"🚀 Piper TTS (buffered fallback): {totalDuration.TotalMilliseconds:F0}ms");
                         return;
@@ -1982,7 +2004,7 @@ namespace BluetoothSpeaker
             }
             catch
             {
-                return "";
+                               return "";
             }
         }
 
@@ -2562,14 +2584,18 @@ namespace BluetoothSpeaker
         {
             try
             {
+                // Use proper shell escaping instead of direct echo
+                var escapedText = EscapeTextForShell(cleanText);
+                var fullCommand = $"printf '%s' {escapedText} | {streamCommand}";
+                
                 using var process = new Process
                 {
                     StartInfo = new ProcessStartInfo
                     {
                         FileName = "bash",
-                        Arguments = $"-c \"echo '{cleanText}' | {streamCommand}\"",
+                        Arguments = $"-c \"{fullCommand}\"",
                         UseShellExecute = false,
-                        RedirectStandardOutput = false,
+                        RedirectStandardOutput = false, // Don't capture stdout for streaming
                         RedirectStandardError = true, // Capture stderr to monitor for broken pipe
                         CreateNoWindow = true
                     }
@@ -2639,6 +2665,25 @@ namespace BluetoothSpeaker
                 }
                 // Broken pipe means audio played successfully, don't treat as error
             }
+        }
+
+        /// <summary>
+        /// Properly escapes text for shell commands to avoid issues with periods, quotes, and special characters
+        /// </summary>
+        private string EscapeTextForShell(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return "''";
+
+            // Method 1: Use $'...' quoting which handles most special characters including newlines
+            var escaped = text
+                .Replace("\\", "\\\\")  // Escape backslashes first
+                .Replace("'", "\\'")    // Escape single quotes
+                .Replace("\n", "\\n")   // Escape newlines
+                .Replace("\r", "\\r")   // Escape carriage returns
+                .Replace("\t", "\\t");  // Escape tabs
+
+            return $"$'{escaped}'";
         }
     }
 }
