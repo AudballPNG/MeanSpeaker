@@ -764,7 +764,7 @@ namespace BluetoothSpeaker
                             
                             if (_enableSpeech)
                             {
-                                await SpeakAsync(comment);
+                                await SpeakWithAudioManagementAsync(comment);
                             }
                         }
                     }
@@ -824,14 +824,14 @@ namespace BluetoothSpeaker
                             await SpeakWithPiperOptimizedAsync(cleanText);
                             break;
                         case "pico":
-                            await RunCommandAsync("bash", $"-c \"echo '{cleanText}' | pico2wave -w /tmp/speech.wav && aplay /tmp/speech.wav\"");
+                            await RunCommandFastAsync("bash", $"-c \"echo '{cleanText}' | pico2wave -w /dev/shm/speech_fast.wav && aplay /dev/shm/speech_fast.wav && rm -f /dev/shm/speech_fast.wav\"");
                             break;
                         case "festival":
-                            await RunCommandAsync("bash", $"-c \"echo '{cleanText}' | festival --tts\"");
+                            await RunCommandFastAsync("bash", $"-c \"echo '{cleanText}' | festival --tts\"");
                             break;
                         case "espeak":
                         default:
-                            await RunCommandAsync("espeak", $"-v {_ttsVoice} -s 160 -a 200 \"{cleanText}\"");
+                            await RunCommandFastAsync("espeak", $"-v {_ttsVoice} -s 160 -a 200 \"{cleanText}\"");
                             break;
                     }
                 }
@@ -912,21 +912,35 @@ namespace BluetoothSpeaker
                 {
                     var startTime = DateTime.Now;
                     
-                    // Use optimized file-based approach (streaming has broken pipe issues)
-                    // Use RAM disk for maximum speed
+                    // Use most efficient approach: direct output to audio device when possible
                     var ramDiskFile = "/dev/shm/speech_optimized.wav";
-                    var optimizedCommand = _workingPiperCommand.Replace("/tmp/speech.wav", ramDiskFile);
                     
-                    // Ensure the command uses reliable file output (not streaming)
-                    if (optimizedCommand.Contains("--output_file -"))
+                    // Try direct audio output first (fastest)
+                    var directCommand = _workingPiperCommand.Replace($"--output_file {ramDiskFile} && aplay {ramDiskFile}", "--output_file - | aplay -");
+                    
+                    try
                     {
-                        optimizedCommand = optimizedCommand.Replace("--output_file - | aplay -", $"--output_file {ramDiskFile} && aplay {ramDiskFile}");
+                        await RunCommandFastAsync("bash", $"-c \"echo '{cleanText}' | {directCommand}\"");
+                        var totalDuration = DateTime.Now - startTime;
+                        Console.WriteLine($"🚀 Piper TTS (direct): {totalDuration.TotalMilliseconds:F0}ms");
+                        return;
                     }
-                    
-                    await RunCommandFastAsync("bash", $"-c \"echo '{cleanText}' | {optimizedCommand} && rm -f {ramDiskFile}\"");
-                    
-                    var totalDuration = DateTime.Now - startTime;
-                    Console.WriteLine($"🚀 Piper TTS (optimized): {totalDuration.TotalMilliseconds:F0}ms");
+                    catch
+                    {
+                        // Fall back to file-based approach if direct streaming fails
+                        var optimizedCommand = _workingPiperCommand.Replace("/tmp/speech.wav", ramDiskFile);
+                        
+                        // Ensure the command uses reliable file output (not streaming)
+                        if (optimizedCommand.Contains("--output_file -"))
+                        {
+                            optimizedCommand = optimizedCommand.Replace("--output_file - | aplay -", $"--output_file {ramDiskFile} && aplay {ramDiskFile}");
+                        }
+                        
+                        await RunCommandFastAsync("bash", $"-c \"echo '{cleanText}' | {optimizedCommand} && rm -f {ramDiskFile}\"");
+                        
+                        var totalDuration = DateTime.Now - startTime;
+                        Console.WriteLine($"🚀 Piper TTS (file): {totalDuration.TotalMilliseconds:F0}ms");
+                    }
                 }
                 else
                 {
@@ -2028,7 +2042,7 @@ namespace BluetoothSpeaker
                         if (line.Contains(_connectedDeviceAddress) || line.Contains("bluealsa-aplay"))
                         {
                             // Check CPU usage to see if it's actively processing
-                            var cpuMatch = System.Text.RegularExpressions.Regex.Match(line, @"\s+(\d+\.\d+)\s+");
+                            var cpuMatch = System.Text.RegularExpressions.Regex.Match(line, @"\s+(\d+\.\d+)\s+ ");
                             if (cpuMatch.Success && float.TryParse(cpuMatch.Groups[1].Value, out float cpu) && cpu > 0.1)
                             {
                                 return "Audio playing - metadata unavailable";
@@ -2496,6 +2510,38 @@ namespace BluetoothSpeaker
             {
                 Console.WriteLine($"❌ Error in real-time detection: {ex.Message}");
                 return "";
+            }
+        }
+
+        private async Task SpeakWithAudioManagementAsync(string text)
+        {
+            try
+            {
+                // Temporarily lower music volume or pause to prevent audio device conflicts
+                var musicWasPlaying = await IsAudioCurrentlyPlayingAsync();
+                
+                if (musicWasPlaying)
+                {
+                    // Lower system volume temporarily (much faster than stopping playback)
+                    await RunCommandFastAsync("amixer", "set Master 30%");
+                    await Task.Delay(100); // Brief pause for audio device transition
+                }
+                
+                // Execute TTS
+                await SpeakAsync(text);
+                
+                if (musicWasPlaying)
+                {
+                    // Restore volume after TTS completes
+                    await Task.Delay(500); // Give TTS time to finish audio playback
+                    await RunCommandFastAsync("amixer", "set Master 80%");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error in managed speech: {ex.Message}");
+                // Fallback to direct speech
+                await SpeakAsync(text);
             }
         }
     }
