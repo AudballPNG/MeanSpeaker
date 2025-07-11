@@ -912,9 +912,15 @@ namespace BluetoothSpeaker
                 {
                     var startTime = DateTime.Now;
                     
-                    // Try streaming first for minimal latency (your preferred approach)
+                    // Convert base command to streaming version for minimal latency
                     var ramDiskFile = "/dev/shm/speech_optimized.wav";
-                    var streamCommand = _workingPiperCommand.Replace($"--output_file {ramDiskFile} && aplay -q {ramDiskFile}", "--output_file - | aplay -q -t wav -");
+                    
+                    // Extract the piper part (before && aplay) and build streaming command
+                    var piperPart = _workingPiperCommand.Split(new[] { " && aplay" }, StringSplitOptions.None)[0];
+                    var streamCommand = piperPart.Replace($"--output_file {ramDiskFile}", "--output_file -") + " | aplay -q -t wav -";
+                    
+                    Console.WriteLine($"🔍 Base command: {_workingPiperCommand}");
+                    Console.WriteLine($"🔍 Stream command: {streamCommand}");
                     
                     try
                     {
@@ -931,15 +937,8 @@ namespace BluetoothSpeaker
                     // Only fall back to buffered if streaming fails completely
                     try
                     {
-                        var bufferedCommand = _workingPiperCommand.Replace("/tmp/speech.wav", ramDiskFile);
-                        
-                        // Ensure we're using file output for fallback
-                        if (bufferedCommand.Contains("--output_file -"))
-                        {
-                            bufferedCommand = bufferedCommand.Replace("--output_file - | aplay -q -t wav -", $"--output_file {ramDiskFile} && aplay -q {ramDiskFile}");
-                        }
-                        
-                        await RunCommandFastAsync("bash", $"-c \"echo '{cleanText}' | {bufferedCommand} && rm -f {ramDiskFile}\"");
+                        // Use original command for buffered approach
+                        await RunCommandFastAsync("bash", $"-c \"echo '{cleanText}' | {_workingPiperCommand} && rm -f {ramDiskFile}\"");
                         var totalDuration = DateTime.Now - startTime;
                         Console.WriteLine($"🚀 Piper TTS (buffered fallback): {totalDuration.TotalMilliseconds:F0}ms");
                         return;
@@ -979,21 +978,21 @@ namespace BluetoothSpeaker
             var userHome = Environment.GetEnvironmentVariable("HOME") ?? "/home/" + Environment.UserName;
             var piperModelPath = $"{userHome}/.local/share/piper/voices/{piperVoice}.onnx";
             
-            // Pre-configured commands prioritizing streaming for minimal latency
-            var optimizedCommands = new[]
+            // Set up base command template that can be converted to streaming or buffered
+            var baseCommands = new[]
             {
-                // Your working setup: direct piper with model (streaming for low latency)
+                // Your working setup: direct piper with model
                 File.Exists(piperModelPath) ? $"piper --model '{piperModelPath}' --output_file /dev/shm/speech_optimized.wav && aplay -q /dev/shm/speech_optimized.wav" : null,
                 
-                // Fallback: piper without model (streaming)
+                // Fallback: piper without model
                 "piper --output_file /dev/shm/speech_optimized.wav && aplay -q /dev/shm/speech_optimized.wav",
                 
-                // Last resort: python module (streaming)
+                // Last resort: python module
                 "python3 -m piper --output_file /dev/shm/speech_optimized.wav && aplay -q /dev/shm/speech_optimized.wav"
             };
             
             // Quick validation (just check if piper command exists, don't actually test audio)
-            foreach (var command in optimizedCommands)
+            foreach (var command in baseCommands)
             {
                 if (string.IsNullOrEmpty(command)) continue;
                 
