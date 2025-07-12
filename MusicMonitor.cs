@@ -7,6 +7,7 @@ using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -929,77 +930,93 @@ namespace BluetoothSpeaker
         {
             try
             {
-                // Initialize optimal setup once at startup (not during first TTS call)
                 if (!_piperSetupInitialized)
                 {
                     await InitializeOptimalPiperSetupAsync();
                     _piperSetupInitialized = true;
                 }
-                
-                if (_workingPiperCommand != null)
+
+                if (string.IsNullOrEmpty(_workingPiperCommand))
                 {
-                    var startTime = DateTime.Now;
-                    
-                    // Convert base command to streaming version for minimal latency
-                    var ramDiskFile = "/dev/shm/speech_optimized.wav";
-                    
-                    // Extract the piper part (before && aplay) and build streaming command
-                    var piperPart = _workingPiperCommand.Split(new[] { " && aplay" }, StringSplitOptions.None)[0];
-                    var streamCommand = piperPart.Replace($"--output_file {ramDiskFile}", "--output_file -") + " | aplay -q -t wav -";
-                    
-                    Console.WriteLine($"🔍 Base command: {_workingPiperCommand}");
-                    Console.WriteLine($"🔍 Stream command: {streamCommand}");
-                    
-                    try
-                    {
-                        await RunPiperStreamingCommandAsync(cleanText, streamCommand);
-                        var totalDuration = DateTime.Now - startTime;
-                        Console.WriteLine($"🚀 Piper TTS (streaming): {totalDuration.TotalMilliseconds:F0}ms");
-                        return;
-                    }
-                    catch (Exception streamEx)
-                    {
-                        Console.WriteLine($"⚠️ Streaming failed: {streamEx.Message}, trying buffered fallback");
-                    }
-                    
-                    // Only fall back to buffered if streaming fails completely
-                    try
-                    {
-                        // Use proper shell escaping for buffered approach
-                        var escapedText = EscapeTextForShell(cleanText);
-                        var bufferedCommand = $"printf '%s' {escapedText} | {_workingPiperCommand} && rm -f {ramDiskFile}";
-                        await RunCommandFastAsync("bash", $"-c \"{bufferedCommand}\"");
-                        var totalDuration = DateTime.Now - startTime;
-                        Console.WriteLine($"🚀 Piper TTS (buffered fallback): {totalDuration.TotalMilliseconds:F0}ms");
-                        return;
-                    }
-                    catch (Exception bufferEx)
-                    {
-                        Console.WriteLine($"⚠️ Buffered fallback also failed: {bufferEx.Message}");
-                    }
+                    Console.WriteLine("❌ Piper TTS is not configured, cannot speak.");
+                    return;
+                }
+
+                var startTime = DateTime.Now;
+                
+                // OPTIMAL APPROACH: Use printf with explicit line termination to ensure complete input
+                // This ensures all text reaches Piper without pipeline breaking, avoiding file I/O overhead
+                var escapedText = EscapeTextForShell(cleanText);
+                
+                string command;
+                if (_workingPiperModelPath != null)
+                {
+                    // Method 1: Use printf with explicit newline + EOF to ensure complete text transmission
+                    command = $"(printf '%s\\n' {escapedText}; printf '\\x04') | piper --model '{_workingPiperModelPath}' --output_file - | aplay -q -t wav -";
                 }
                 else
                 {
-                    // No working Piper found, fall back to espeak
-                    Console.WriteLine("⚠️ No working Piper command found, falling back to espeak");
-                    await RunCommandAsync("espeak", $"-v {_ttsVoice} -s 160 -a 200 \"{cleanText}\"");
+                    // Method 1: Use printf with explicit newline + EOF to ensure complete text transmission  
+                    command = $"(printf '%s\\n' {escapedText}; printf '\\x04') | piper --output_file - | aplay -q -t wav -";
+                }
+                
+                Console.WriteLine($"🔊 Speaking complete text ({cleanText.Length} chars) via optimized pipeline");
+                
+                try
+                {
+                    await RunCommandFastAsync("bash", $"-c \"{command}\"");
+                }
+                catch (Exception pipelineEx)
+                {
+                    Console.WriteLine($"⚠️ Pipeline method failed: {pipelineEx.Message}");
+                    
+                    // Fallback to file method if pipeline fails
+                    await SpeakWithPiperFileMethodAsync(cleanText);
+                }
+
+                var duration = DateTime.Now - startTime;
+                Console.WriteLine($"🚀 Piper TTS completed in {duration.TotalMilliseconds}ms");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error in optimized Piper speech: {ex.Message}");
+                
+                // Fallback: try the old sentence-splitting method as last resort
+                await SpeakWithPiperSentenceSplittingFallbackAsync(cleanText);
+            }
+        }
+
+        private async Task SpeakWithPiperSentenceSplittingFallbackAsync(string cleanText)
+        {
+            try
+            {
+                Console.WriteLine("🔄 Using sentence-splitting fallback method");
+                
+                // Split text into sentences as fallback method
+                var sentences = System.Text.RegularExpressions.Regex.Split(cleanText, @"(?<=[.?!])\s*")
+                                     .Where(s => !string.IsNullOrWhiteSpace(s))
+                                     .ToArray();
+
+                foreach (var sentence in sentences)
+                {
+                    if (string.IsNullOrWhiteSpace(sentence)) continue;
+                    
+                    var trimmedSentence = sentence.Trim();
+                    var escapedSentence = EscapeTextForShell(trimmedSentence);
+                    
+                    var commandToRun = _workingPiperModelPath != null 
+                        ? $"printf '%s' {escapedSentence} | piper --model '{_workingPiperModelPath}' --output_file - | aplay -q -t wav -"
+                        : $"printf '%s' {escapedSentence} | piper --output_file - | aplay -q -t wav -";
+                    
+                    await RunCommandFastAsync("bash", $"-c \"{commandToRun}\"");
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ Optimized Piper failed: {ex.Message}");
-                // Fall back to espeak
-                try
-                {
-                    await RunCommandAsync("espeak", $"-v {_ttsVoice} -s 160 -a 200 \"{cleanText}\"");
-                }
-                catch (Exception espeakEx)
-                {
-                    Console.WriteLine($"❌ Espeak fallback also failed: {espeakEx.Message}");
-                }
+                Console.WriteLine($"❌ Sentence-splitting fallback also failed: {ex.Message}");
             }
         }
-        
+
         private async Task InitializeOptimalPiperSetupAsync()
         {
             Console.WriteLine("🔧 Initializing optimal Piper TTS setup...");
@@ -2583,7 +2600,7 @@ namespace BluetoothSpeaker
             catch (Exception ex)
             {
                 Console.WriteLine($"❌ Error in managed speech: {ex.Message}");
-                // Fallback to direct speech
+                // Fallback might be needed here
                 await SpeakAsync(text);
             }
         }
@@ -2672,6 +2689,38 @@ namespace BluetoothSpeaker
                     throw;
                 }
                 // Broken pipe means audio played successfully, don't treat as error
+            }
+        }
+
+        private async Task SpeakWithPiperFileMethodAsync(string cleanText)
+        {
+            Console.WriteLine("🔄 Using file-based fallback method");
+            
+            var tempTextFile = $"/dev/shm/speech_text_{Guid.NewGuid().ToString()[..8]}.txt";
+            var tempWavFile = $"/dev/shm/speech_audio_{Guid.NewGuid().ToString()[..8]}.wav";
+            
+            try
+            {
+                // Write the complete text to a file
+                await File.WriteAllTextAsync(tempTextFile, cleanText);
+                
+                string command;
+                if (_workingPiperModelPath != null)
+                {
+                    command = $"piper --model '{_workingPiperModelPath}' --output_file '{tempWavFile}' < '{tempTextFile}' && aplay -q '{tempWavFile}'";
+                }
+                else
+                {
+                    command = $"piper --output_file '{tempWavFile}' < '{tempTextFile}' && aplay -q '{tempWavFile}'";
+                }
+                
+                await RunCommandFastAsync("bash", $"-c \"{command}\"");
+            }
+            finally
+            {
+                // Clean up temporary files
+                try { File.Delete(tempTextFile); } catch { }
+                try { File.Delete(tempWavFile); } catch { }
             }
         }
     }
