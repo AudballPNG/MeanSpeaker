@@ -807,16 +807,24 @@ namespace BluetoothSpeaker
 
         /// <summary>
         /// Properly escapes text for shell commands to prevent issues with periods and special characters.
+        /// <summary>
+        /// Properly escapes text for shell commands to avoid issues with periods, quotes, and special characters.
         /// This is CRITICAL for Piper TTS to read complete sentences instead of stopping at periods.
         /// </summary>
         private string EscapeTextForShell(string text)
         {
-            // Remove problematic characters that could interfere with shell processing
-            var cleanText = text.Replace("\"", "").Replace("`", "").Trim();
-            
-            // Properly escape single quotes for bash: replace ' with '"'"'
-            // This allows single quotes to be included in the text without breaking the shell command
-            return cleanText.Replace("'", "'\"'\"'");
+            if (string.IsNullOrEmpty(text))
+                return "''";
+
+            // Use $'...' quoting which handles most special characters including newlines
+            var escaped = text
+                .Replace("\\", "\\\\")  // Escape backslashes first
+                .Replace("'", "\\'")    // Escape single quotes
+                .Replace("\n", "\\n")   // Escape newlines
+                .Replace("\r", "\\r")   // Escape carriage returns
+                .Replace("\t", "\\t");  // Escape tabs
+
+            return $"$'{escaped}'";
         }
 
         // Pre-configured optimal Piper setup (no runtime discovery needed)
@@ -2665,25 +2673,6 @@ namespace BluetoothSpeaker
                 }
                 // Broken pipe means audio played successfully, don't treat as error
             }
-        }
-
-        /// <summary>
-        /// Properly escapes text for shell commands to avoid issues with periods, quotes, and special characters
-        /// </summary>
-        private string EscapeTextForShell(string text)
-        {
-            if (string.IsNullOrEmpty(text))
-                return "''";
-
-            // Method 1: Use $'...' quoting which handles most special characters including newlines
-            var escaped = text
-                .Replace("\\", "\\\\")  // Escape backslashes first
-                .Replace("'", "\\'")    // Escape single quotes
-                .Replace("\n", "\\n")   // Escape newlines
-                .Replace("\r", "\\r")   // Escape carriage returns
-                .Replace("\t", "\\t");  // Escape tabs
-
-            return $"$'{escaped}'";
         }
     }
 }
