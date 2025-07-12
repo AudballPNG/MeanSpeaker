@@ -944,38 +944,25 @@ namespace BluetoothSpeaker
 
                 var startTime = DateTime.Now;
                 
-                // OPTIMAL APPROACH: Use printf with explicit line termination to ensure complete input
-                // This ensures all text reaches Piper without pipeline breaking, avoiding file I/O overhead
-                var escapedText = EscapeTextForShell(cleanText);
-                
-                string command;
-                if (_workingPiperModelPath != null)
-                {
-                    // Method 1: Use printf with explicit newline + EOF to ensure complete text transmission
-                    command = $"(printf '%s\\n' {escapedText}; printf '\\x04') | piper --model '{_workingPiperModelPath}' --output_file - | aplay -q -t wav -";
-                }
-                else
-                {
-                    // Method 1: Use printf with explicit newline + EOF to ensure complete text transmission  
-                    command = $"(printf '%s\\n' {escapedText}; printf '\\x04') | piper --output_file - | aplay -q -t wav -";
-                }
-                
-                Console.WriteLine($"🔊 Speaking complete text ({cleanText.Length} chars) via optimized pipeline");
+                // PRIMARY APPROACH: File-based method for maximum reliability with multi-sentence text
+                // This completely avoids shell escaping and pipeline issues
+                Console.WriteLine($"🔊 Speaking complete text ({cleanText.Length} chars) via file method");
                 
                 try
                 {
-                    await RunCommandFastAsync("bash", $"-c \"{command}\"");
-                }
-                catch (Exception pipelineEx)
-                {
-                    Console.WriteLine($"⚠️ Pipeline method failed: {pipelineEx.Message}");
-                    
-                    // Fallback to file method if pipeline fails
                     await SpeakWithPiperFileMethodAsync(cleanText);
+                    
+                    var duration = DateTime.Now - startTime;
+                    Console.WriteLine($"✅ File-based method succeeded in {duration.TotalMilliseconds}ms");
+                    return;
                 }
-
-                var duration = DateTime.Now - startTime;
-                Console.WriteLine($"🚀 Piper TTS completed in {duration.TotalMilliseconds}ms");
+                catch (Exception fileEx)
+                {
+                    Console.WriteLine($"⚠️ File method failed: {fileEx.Message}");
+                    
+                    // FALLBACK 1: Try printf pipeline method  
+                    await SpeakWithPiperPipelineFallbackAsync(cleanText);
+                }
             }
             catch (Exception ex)
             {
@@ -1005,8 +992,8 @@ namespace BluetoothSpeaker
                     var escapedSentence = EscapeTextForShell(trimmedSentence);
                     
                     var commandToRun = _workingPiperModelPath != null 
-                        ? $"printf '%s' {escapedSentence} | piper --model '{_workingPiperModelPath}' --output_file - | aplay -q -t wav -"
-                        : $"printf '%s' {escapedSentence} | piper --output_file - | aplay -q -t wav -";
+                        ? $"printf '%s\\n' {escapedSentence} | piper --model '{_workingPiperModelPath}' --output_file - | aplay -q -t wav -"
+                        : $"printf '%s\\n' {escapedSentence} | piper --output_file - | aplay -q -t wav -";
                     
                     await RunCommandFastAsync("bash", $"-c \"{commandToRun}\"");
                 }
@@ -1014,6 +1001,38 @@ namespace BluetoothSpeaker
             catch (Exception ex)
             {
                 Console.WriteLine($"❌ Sentence-splitting fallback also failed: {ex.Message}");
+            }
+        }
+
+        private async Task SpeakWithPiperPipelineFallbackAsync(string cleanText)
+        {
+            try
+            {
+                Console.WriteLine("🔄 Using printf pipeline fallback method");
+                
+                var escapedText = EscapeTextForShell(cleanText);
+                
+                string command;
+                if (_workingPiperModelPath != null)
+                {
+                    // Use printf with explicit format string for maximum reliability
+                    command = $"printf '%s\\n' {escapedText} | piper --model '{_workingPiperModelPath}' --output_file - | aplay -q -t wav -";
+                }
+                else
+                {
+                    // Use printf with explicit format string for maximum reliability  
+                    command = $"printf '%s\\n' {escapedText} | piper --output_file - | aplay -q -t wav -";
+                }
+                
+                await RunCommandFastAsync("bash", $"-c \"{command}\"");
+                Console.WriteLine($"✅ Pipeline fallback succeeded");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ Pipeline fallback failed: {ex.Message}");
+                
+                // FALLBACK 2: Try sentence-splitting as last resort
+                await SpeakWithPiperSentenceSplittingFallbackAsync(cleanText);
             }
         }
 
