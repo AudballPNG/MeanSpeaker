@@ -91,47 +91,4 @@ fi
 # Cleanup
 rm -f /tmp/piper_test*.wav
 
-# Piper TTS configuration
-PIPER_MODEL="/home/audrey/.local/share/piper/voices/en_US-lessac-medium.onnx"
-OUTPUT_DIR="/dev/shm"
-
-# Function to speak a single sentence
-speak_sentence() {
-    local sentence="$1"
-    local temp_wav="$OUTPUT_DIR/speech_$(date +%s%N).wav"
-    
-    echo "🔊 Speaking: $sentence"
-    
-    # Generate audio for the sentence
-    echo "$sentence" | piper --model "$PIPER_MODEL" --output_file "$temp_wav"
-    
-    # Play the audio file
-    aplay -q "$temp_wav"
-    
-    # Clean up the temporary file
-    rm "$temp_wav"
-}
-
-# Main TTS function to handle multi-sentence text
-speak_tts() {
-    local text="$1"
-    
-    # Split text into sentences (handles '.', '?', '!')
-    # The -n 1 ensures we process one sentence at a time
-    echo "$text" | sed -e 's/[.?!]/&\n/g' | while IFS= read -r sentence; do
-        # Trim leading/trailing whitespace
-        sentence=$(echo "$sentence" | xargs)
-        if [ -n "$sentence" ]; then
-            speak_sentence "$sentence"
-        fi
-    done
-}
-
-# The text to be spoken
-TEXT_TO_SPEAK="Oh great, another victim of questionable music taste. Brace yourself, Audrey, for the eardrum assault of basic pop hits and generic love ballads that you subject the world to."
-
-echo "Starting TTS test..."
-speak_tts "$TEXT_TO_SPEAK"
-echo "TTS test finished."
-
 echo "🎯 Piper TTS test complete!"
