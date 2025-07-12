@@ -324,8 +324,12 @@ namespace BluetoothSpeaker
                                     // Verify the device supports A2DP
                                     await VerifyA2DPConnectionAsync(address);
                                     
-                                    // Welcome message
-                                    await GenerateWelcomeCommentAsync(name);
+                                    // Only generate welcome message if D-Bus is not handling events
+                                    // (to prevent duplicate welcomes when both systems detect connection)
+                                    if (_usingFallbackOnly)
+                                    {
+                                        await GenerateWelcomeCommentAsync(name);
+                                    }
                                 }
                                 return; // Found a device, we're done
                             }
@@ -944,24 +948,24 @@ namespace BluetoothSpeaker
 
                 var startTime = DateTime.Now;
                 
-                // PRIMARY APPROACH: File-based method for maximum reliability with multi-sentence text
-                // This completely avoids shell escaping and pipeline issues
-                Console.WriteLine($"🔊 Speaking complete text ({cleanText.Length} chars) via file method");
+                // PRIMARY APPROACH: Printf pipeline method for optimal speed with multi-sentence text
+                // This should be fast while still handling complete text properly
+                Console.WriteLine($"🔊 Speaking complete text ({cleanText.Length} chars) via printf pipeline");
                 
                 try
                 {
-                    await SpeakWithPiperFileMethodAsync(cleanText);
+                    await SpeakWithPiperPipelineFallbackAsync(cleanText);
                     
                     var duration = DateTime.Now - startTime;
-                    Console.WriteLine($"✅ File-based method succeeded in {duration.TotalMilliseconds}ms");
+                    Console.WriteLine($"✅ Printf pipeline succeeded in {duration.TotalMilliseconds}ms");
                     return;
                 }
-                catch (Exception fileEx)
+                catch (Exception pipelineEx)
                 {
-                    Console.WriteLine($"⚠️ File method failed: {fileEx.Message}");
+                    Console.WriteLine($"⚠️ Printf pipeline failed: {pipelineEx.Message}");
                     
-                    // FALLBACK 1: Try printf pipeline method  
-                    await SpeakWithPiperPipelineFallbackAsync(cleanText);
+                    // FALLBACK 1: Try file method for maximum reliability
+                    await SpeakWithPiperFileMethodAsync(cleanText);
                 }
             }
             catch (Exception ex)
@@ -1008,8 +1012,6 @@ namespace BluetoothSpeaker
         {
             try
             {
-                Console.WriteLine("🔄 Using printf pipeline fallback method");
-                
                 var escapedText = EscapeTextForShell(cleanText);
                 
                 string command;
@@ -1025,14 +1027,14 @@ namespace BluetoothSpeaker
                 }
                 
                 await RunCommandFastAsync("bash", $"-c \"{command}\"");
-                Console.WriteLine($"✅ Pipeline fallback succeeded");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"⚠️ Pipeline fallback failed: {ex.Message}");
+                Console.WriteLine($"⚠️ Printf pipeline failed: {ex.Message}");
                 
-                // FALLBACK 2: Try sentence-splitting as last resort
+                // FALLBACK: Try sentence-splitting as last resort
                 await SpeakWithPiperSentenceSplittingFallbackAsync(cleanText);
+                throw; // Re-throw so file method can be tried next
             }
         }
 
@@ -2716,7 +2718,6 @@ namespace BluetoothSpeaker
             Console.WriteLine("🔄 Using file-based fallback method");
             
             var tempTextFile = $"/dev/shm/speech_text_{Guid.NewGuid().ToString()[..8]}.txt";
-            var tempWavFile = $"/dev/shm/speech_audio_{Guid.NewGuid().ToString()[..8]}.wav";
             
             try
             {
@@ -2726,20 +2727,21 @@ namespace BluetoothSpeaker
                 string command;
                 if (_workingPiperModelPath != null)
                 {
-                    command = $"piper --model '{_workingPiperModelPath}' --output_file '{tempWavFile}' < '{tempTextFile}' && aplay -q '{tempWavFile}'";
+                    // Stream directly to aplay without intermediate wav file for speed
+                    command = $"piper --model '{_workingPiperModelPath}' --output_file - < '{tempTextFile}' | aplay -q -t wav -";
                 }
                 else
                 {
-                    command = $"piper --output_file '{tempWavFile}' < '{tempTextFile}' && aplay -q '{tempWavFile}'";
+                    // Stream directly to aplay without intermediate wav file for speed
+                    command = $"piper --output_file - < '{tempTextFile}' | aplay -q -t wav -";
                 }
                 
                 await RunCommandFastAsync("bash", $"-c \"{command}\"");
             }
             finally
             {
-                // Clean up temporary files
+                // Clean up temporary file
                 try { File.Delete(tempTextFile); } catch { }
-                try { File.Delete(tempWavFile); } catch { }
             }
         }
     }
