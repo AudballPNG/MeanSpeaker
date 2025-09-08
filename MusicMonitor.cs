@@ -1040,19 +1040,50 @@ namespace BluetoothSpeaker
             try
             {
                 Console.WriteLine("🔧 Auto-configuring Bluetooth speaker...");
-                
-                // Check if we're already configured by looking for our setup marker
-                if (File.Exists("/usr/local/bin/route-bluetooth-audio.sh"))
+
+                // Only perform auto-setup on Linux
+                if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
                 {
-                    Console.WriteLine("✅ System already configured by simple-setup.sh");
-                    
-                    // Just ensure services are running
+                    Console.WriteLine("ℹ️ Auto-setup is Linux-only. Skipping on this platform.");
+                    return;
+                }
+
+                // Determine privilege capability (root or passwordless sudo)
+                bool isRoot = false;
+                try
+                {
+                    var uidStr = await RunCommandWithOutputAsync("id", "-u");
+                    isRoot = uidStr.Trim() == "0";
+                }
+                catch { }
+
+                bool hasPasswordlessSudo = false;
+                try
+                {
+                    var rc = await RunCommandWithOutputAsync("bash", "-c \"sudo -n true 2>/dev/null; echo $?\"");
+                    hasPasswordlessSudo = rc.Trim() == "0";
+                }
+                catch { }
+                
+                // Quick status check before doing anything
+                var (isConfigured, missing) = await CheckSetupStatusAsync();
+                if (isConfigured)
+                {
+                    Console.WriteLine("✅ System appears configured (Bluetooth/BlueALSA present)");
+                    // Ensure services are running
                     await RunCommandSilentlyAsync("sudo", "systemctl start bluetooth");
                     await RunCommandSilentlyAsync("sudo", "systemctl start bluealsa");
                     await RunCommandSilentlyAsync("sudo", "systemctl start bluealsa-aplay");
                     
                     Console.WriteLine("✅ Services restarted and ready!");
                     return;
+                }
+                else
+                {
+                    if (missing.Length > 0)
+                    {
+                        Console.WriteLine("⚠️ Missing components detected: " + string.Join(", ", missing));
+                    }
                 }
                 
                 // Look for simple-setup.sh script in current directory or common locations
@@ -1076,18 +1107,41 @@ namespace BluetoothSpeaker
                 if (!string.IsNullOrEmpty(setupScript))
                 {
                     Console.WriteLine($"🚀 Found setup script at: {setupScript}");
-                    Console.WriteLine("� Running comprehensive setup (this may take a few minutes)...");
+                    
+                    if (!isRoot && !hasPasswordlessSudo)
+                    {
+                        Console.WriteLine("⚠️ Setup requires root privileges.");
+                        Console.WriteLine("💡 Please run manually: sudo ./simple-setup.sh");
+                        return;
+                    }
+                    
+                    Console.WriteLine("🔧 Running comprehensive setup (this may take a few minutes)...");
                     
                     // Make sure the script is executable
                     await RunCommandSilentlyAsync("chmod", $"+x {setupScript}");
                     
                     // Run the setup script
-                    await RunCommandAsync("bash", setupScript);
+                    if (isRoot)
+                    {
+                        await RunCommandAsync("bash", setupScript);
+                    }
+                    else
+                    {
+                        await RunCommandAsync("sudo", $"bash \"{setupScript}\"");
+                    }
                     
                     Console.WriteLine("✅ Setup script completed!");
                 }
                 else
                 {
+                    if (!isRoot && !hasPasswordlessSudo)
+                    {
+                        Console.WriteLine("⚠️ simple-setup.sh not found and auto-setup needs sudo.");
+                        Console.WriteLine("💡 Run manual setup: sudo ./simple-setup.sh (from the project directory)");
+                        Console.WriteLine("💡 Or install packages yourself: bluetooth bluez bluealsa playerctl espeak piper pulseaudio dbus");
+                        return;
+                    }
+                    
                     Console.WriteLine("⚠️ simple-setup.sh not found. Doing basic setup...");
                     Console.WriteLine("💡 For full features, run: sudo ./simple-setup.sh");
                     
@@ -1126,6 +1180,74 @@ namespace BluetoothSpeaker
             
             Console.WriteLine("✅ Basic setup complete!");
             Console.WriteLine("⚠️ For full audio features, run: sudo ./simple-setup.sh");
+        }
+
+        // Returns whether core services/binaries are available, plus a list of missing components
+        private async Task<(bool ok, string[] missing)> CheckSetupStatusAsync()
+        {
+            var missing = new List<string>();
+            bool bluetoothSvc = false, bluealsaSvc = false, bluealsaBin = false, aplaySvc = false;
+
+            try
+            {
+                var s1 = await RunCommandWithOutputAsync("systemctl", "is-enabled bluetooth");
+                bluetoothSvc = s1.Trim().Contains("enabled");
+            }
+            catch { }
+            try
+            {
+                var s2 = await RunCommandWithOutputAsync("systemctl", "is-enabled bluealsa");
+                bluealsaSvc = s2.Trim().Contains("enabled");
+            }
+            catch { }
+            try
+            {
+                var s3 = await RunCommandWithOutputAsync("which", "bluealsa-aplay");
+                bluealsaBin = !string.IsNullOrWhiteSpace(s3);
+            }
+            catch { }
+            try
+            {
+                var s4 = await RunCommandWithOutputAsync("systemctl", "is-enabled bluealsa-aplay");
+                aplaySvc = s4.Trim().Contains("enabled");
+            }
+            catch { }
+
+            if (!bluetoothSvc) missing.Add("bluetooth.service not enabled");
+            if (!bluealsaSvc && !bluealsaBin) missing.Add("bluealsa/bluealsa-aplay missing");
+            // Marker script from full setup
+            if (!File.Exists("/usr/local/bin/route-bluetooth-audio.sh"))
+                missing.Add("route-bluetooth-audio.sh not found (full setup not run)");
+
+            var ok = bluetoothSvc && (bluealsaSvc || bluealsaBin);
+            return (ok, missing.ToArray());
+        }
+
+        // Run a command allowing interactive prompts (e.g., sudo password) using the user's TTY
+        private async Task<bool> RunInteractiveAsync(string command, string arguments)
+        {
+            try
+            {
+                using var process = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = command,
+                        Arguments = arguments,
+                        UseShellExecute = true, // allow TTY prompts
+                        RedirectStandardOutput = false,
+                        RedirectStandardError = false,
+                        CreateNoWindow = false
+                    }
+                };
+                process.Start();
+                await process.WaitForExitAsync();
+                return process.ExitCode == 0;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private async Task WriteConfigFileAsync(string filePath, string content)
@@ -1732,8 +1854,7 @@ namespace BluetoothSpeaker
             }
             else if (audioIsPlaying)
             {
-                Console.WriteLine("✅ Audio is playing but no metadata available");
-                Console.WriteLine("💡 Try starting bluealsa-aplay manually: sudo systemctl start bluealsa-aplay");
+                Console.WriteLine("✅ Audio is playing (detected via CPU/PulseAudio/ALSA).");
             }
             else if (!string.IsNullOrEmpty(blualsaList) && string.IsNullOrEmpty(processes))
             {
@@ -1756,43 +1877,38 @@ namespace BluetoothSpeaker
                 Console.WriteLine("   sudo systemctl restart bluealsa-aplay");
                 Console.WriteLine("   sudo systemctl restart bluealsa");
             }
-            
-            Console.WriteLine("\n=== END DEBUG ===");
         }
 
+        // Query MPRIS over D-Bus to retrieve current track metadata from any available player
         private async Task<string> GetMPRISMetadataAsync()
         {
             try
             {
-                // List all MPRIS players and try each one
                 var dbusNames = await RunCommandWithOutputAsync("dbus-send", "--session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.ListNames");
-                
-                if (string.IsNullOrEmpty(dbusNames)) return "";
-                
-                var lines = dbusNames.Split('\n');
+                if (string.IsNullOrEmpty(dbusNames)) return string.Empty;
+
+                var lines = dbusNames.Split('\n', StringSplitOptions.RemoveEmptyEntries);
                 foreach (var line in lines)
                 {
                     if (line.Contains("org.mpris.MediaPlayer2."))
                     {
-                        var playerMatch = System.Text.RegularExpressions.Regex.Match(line, @"org\.mpris\.MediaPlayer2\.(\w+)");
-                        if (playerMatch.Success)
+                        var match = System.Text.RegularExpressions.Regex.Match(line, @"org\.mpris\.MediaPlayer2\.(\w+)");
+                        if (match.Success)
                         {
-                            var playerName = playerMatch.Groups[1].Value;
+                            var playerName = match.Groups[1].Value;
                             var metadata = await GetMPRISPlayerMetadataAsync(playerName);
                             if (!string.IsNullOrEmpty(metadata))
-                            {
                                 return metadata;
-                            }
                         }
                     }
                 }
-                
-                return "";
+
+                return string.Empty;
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"❌ Error getting MPRIS metadata: {ex.Message}");
-                return "";
+                return string.Empty;
             }
         }
 
