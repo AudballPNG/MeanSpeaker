@@ -325,15 +325,90 @@ else
 fi
 
 echo ""
-echo "✅ Setup complete!"
+echo "✅ Basic setup complete!"
+
+# Install Local AI (Ollama + Phi-3 Mini)
+echo ""
+echo "🤖 Local AI Setup (Recommended)"
+echo "Installing Ollama + Phi-3 Mini for local AI commentary..."
+echo "Benefits:"
+echo "  ✅ Completely offline - no internet required"
+echo "  ✅ Private - your music data never leaves the device"
+echo "  ✅ No API costs - unlimited commentary"
+echo "  ✅ Commercial-ready - MIT licensed"
+echo ""
+
+# Install Ollama for ARM64 (Raspberry Pi)
+echo "📥 Installing Ollama..."
+if ! command -v ollama &> /dev/null; then
+    # Download and install Ollama
+    curl -fsSL https://ollama.ai/install.sh | sh
+    
+    if command -v ollama &> /dev/null; then
+        echo "✅ Ollama installed successfully"
+    else
+        echo "❌ Ollama installation failed - trying manual installation"
+        
+        # Manual installation for ARM64
+        wget -O ollama https://github.com/ollama/ollama/releases/download/v0.1.32/ollama-linux-arm64
+        chmod +x ollama
+        sudo mv ollama /usr/local/bin/
+        
+        if command -v ollama &> /dev/null; then
+            echo "✅ Ollama installed manually"
+        else
+            echo "❌ Failed to install Ollama - local AI will not be available"
+        fi
+    fi
+else
+    echo "✅ Ollama already installed"
+fi
+
+# Start Ollama service
+echo "🔧 Starting Ollama service..."
+sudo systemctl enable ollama || echo "⚠️ Could not enable Ollama service (may need manual start)"
+sudo systemctl start ollama || echo "⚠️ Could not start Ollama service"
+
+# Wait a moment for service to start
+sleep 3
+
+# Check if Ollama is running and download Phi-3 Mini
+if command -v ollama &> /dev/null; then
+    echo "📥 Downloading Phi-3 Mini model (this may take 5-10 minutes)..."
+    echo "💡 Model size: ~2.4GB - ensure you have good internet connection"
+    
+    # Try to pull the model
+    if timeout 600 ollama pull phi3:mini; then
+        echo "✅ Phi-3 Mini model downloaded successfully"
+        
+        # Test the model
+        echo "🧪 Testing local AI..."
+        TEST_RESPONSE=$(echo "Generate a short snarky comment about someone playing Taylor Swift" | ollama run phi3:mini 2>/dev/null | head -1)
+        if [ -n "$TEST_RESPONSE" ]; then
+            echo "✅ Local AI test successful: $TEST_RESPONSE"
+        else
+            echo "⚠️ Local AI test failed but model is installed"
+        fi
+    else
+        echo "❌ Failed to download Phi-3 Mini model"
+        echo "💡 You can try downloading it later with: ollama pull phi3:mini"
+    fi
+else
+    echo "❌ Ollama not available - skipping model download"
+fi
+
+echo ""
 echo "🎵 Your Pi is now discoverable as 'The Little Shit'"
-echo "🤖 The AI commentary will start automatically on boot"
+echo "🤖 Local AI commentary is ready (no internet required!)"
 echo "📱 Connect your phone and the speaker will work automatically"
 echo ""
-echo "🔧 Service management:"
-echo "  Start:   sudo systemctl start bluetooth-speaker"
-echo "  Stop:    sudo systemctl stop bluetooth-speaker"
-echo "  Status:  sudo systemctl status bluetooth-speaker"
-echo "  Logs:    sudo journalctl -u bluetooth-speaker -f"
-echo "  Or use:  ./speaker-control.sh"
+echo "🚀 Quick Start:"
+echo "  With local AI:  dotnet run"
+echo "  OpenAI mode:    dotnet run -- --openai-api"
+echo "  Silent mode:    dotnet run -- --no-speech"
 echo ""
+echo "🔧 Service management:"
+echo "  Test Ollama:    ollama run phi3:mini"
+echo "  Ollama status:  sudo systemctl status ollama"
+echo ""
+echo "🎯 Your speaker is ready! Local AI commentary will start when you play music."

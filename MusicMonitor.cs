@@ -21,6 +21,9 @@ namespace BluetoothSpeaker
         private readonly string _ttsVoice;
         private readonly string _ttsEngine;
         
+        // Local AI service for offline commentary
+        private LocalAIService? _localAI;
+        
         // Enhanced metadata services
         private BluetoothMetadataService? _bluetoothMetadataService;
         private FallbackMetadataService? _fallbackMetadataService;
@@ -55,6 +58,9 @@ namespace BluetoothSpeaker
             _enableSpeech = enableSpeech;
             _ttsVoice = ttsVoice;
             _ttsEngine = ttsEngine;
+            
+            // Initialize local AI service
+            _localAI = new LocalAIService();
         }
 
         public async Task InitializeAsync()
@@ -109,7 +115,49 @@ namespace BluetoothSpeaker
                 _piperSetupInitialized = true;
             }
             
-            Console.WriteLine("✅ Enhanced Bluetooth Speaker initialized and ready!");
+            // Initialize local AI service
+            Console.WriteLine("🤖 Initializing local AI service...");
+            if (_localAI != null)
+            {
+                var isAvailable = await _localAI.IsAvailableAsync();
+                if (isAvailable)
+                {
+                    var modelLoaded = await _localAI.EnsureModelIsLoadedAsync();
+                    if (modelLoaded)
+                    {
+                        Console.WriteLine("✅ Local AI (Phi-3 Mini) ready for snarky commentary!");
+                    }
+                    else
+                    {
+                        Console.WriteLine("⚠️ Local AI model loading failed, using fallback responses");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("⚠️ Ollama not available, using fallback responses");
+                    Console.WriteLine("💡 Install Ollama and run 'ollama pull phi3:mini' for local AI");
+                }
+            }
+            
+            Console.WriteLine("\u2705 Enhanced Bluetooth Speaker initialized and ready!");
+        }
+
+        // Announce readiness via TTS (or console when TTS disabled)
+        public async Task AnnounceReadyAsync()
+        {
+            try
+            {
+                var msg = "Ready for your device to connect";
+                Console.WriteLine("\ud83d\udd0a " + msg);
+                if (_enableSpeech)
+                {
+                    await SpeakAsync(msg);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("\u26a0\ufe0f Ready announcement failed: " + ex.Message);
+            }
         }
 
         public Task StartMonitoringAsync()
@@ -699,11 +747,18 @@ namespace BluetoothSpeaker
                 
                 // Get the most current information at the time of comment generation
                 var currentContext = await GetCurrentSystemContextAsync();
-                var enhancedPrompt = $"{prompt}\n\nCurrent system state: {currentContext}\n\nBe absolutely savage and target specific details from the current track info. Use artist names, genres, albums to make your roasts more personal and devastating.";
+                var enhancedPrompt = $"{prompt}\n\nCurrent system state: {currentContext}\n\nBe snarky and sarcastic about this specific track. Use artist names, song titles to make your comments more targeted and witty.";
                 
-                // Skip AI if we don't have a real API key
-                if (_openAiApiKey == "dummy-key")
+                string comment;
+                
+                // Try local AI first, fallback to simple responses if needed
+                if (_localAI != null)
                 {
+                    comment = await _localAI.GenerateCommentAsync(enhancedPrompt);
+                }
+                else
+                {
+                    // Fallback responses when no AI available
                     var fallbackComments = new[]
                     {
                         "Ugh, what trash are you playing now?",
@@ -717,91 +772,31 @@ namespace BluetoothSpeaker
                         "Even my error sounds are more musical than this."
                     };
                     
-                    var comment = fallbackComments[_random.Next(fallbackComments.Length)];
-                    Console.WriteLine($"\n🔊 SPEAKER SAYS: {comment}\n");
-                    
-                    if (_enableSpeech)
-                    {
-                        await SpeakAsync(comment);
-                    }
-                    return;
+                    comment = fallbackComments[_random.Next(fallbackComments.Length)];
+                    Console.WriteLine($"� Fallback: {comment}");
                 }
                 
-                var requestBody = new
-                {
-                    model = "gpt-3.5-turbo",
-                    messages = new[]
-                    {
-                        new { role = "system", content = "You are a brutally honest, savage Bluetooth speaker that absolutely destroys people's music taste. You are mean, ruthless, and merciless about every song choice. Roast their musical taste, question their life decisions, insult their vibes, and be as nasty as possible about their awful music. Mock the artist, the genre, the listener's taste - everything. Be creative with your insults but keep it about music taste. Under 30 words of pure musical savagery." },
-                        new { role = "user", content = enhancedPrompt }
-                    },
-                    max_tokens = 120,
-                    temperature = 1.0
-                };
-
-                var json = JsonSerializer.Serialize(requestBody);
-                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                Console.WriteLine($"\n🔊 SPEAKER SAYS: {comment}\n");
                 
-                _httpClient.DefaultRequestHeaders.Clear();
-                _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_openAiApiKey}");
-
-                var response = await _httpClient.PostAsync("https://api.openai.com/v1/chat/completions", content);
-                
-                if (response.IsSuccessStatusCode)
+                if (_enableSpeech)
                 {
-                    var responseJson = await response.Content.ReadAsStringAsync();
-                    var jsonDoc = JsonDocument.Parse(responseJson);
-                    
-                    if (jsonDoc.RootElement.TryGetProperty("choices", out var choices) &&
-                        choices.GetArrayLength() > 0 &&
-                        choices[0].TryGetProperty("message", out var message) &&
-                        message.TryGetProperty("content", out var messageContent))
-                    {
-                        var comment = messageContent.GetString()?.Trim();
-                        if (!string.IsNullOrEmpty(comment))
-                        {
-                            Console.WriteLine($"\n🔊 SPEAKER SAYS: {comment}\n");
-                            
-                            if (_enableSpeech)
-                            {
-                                await SpeakAsync(comment);
-                            }
-                        }
-                    }
-                }
-                else
-                {
-                    Console.WriteLine($"⚠️ AI service unavailable. Using fallback commentary.");
-                    var fallbackComments = new[]
-                    {
-                        "Your music is so bad it broke my AI.",
-                        "Even my broken wit generator knows this is trash.",
-                        "This music is worse than my error messages.",
-                        "At least my malfunctions sound better than this.",
-                        "You managed to break both your taste AND my AI."
-                    };
-                    var comment = fallbackComments[_random.Next(fallbackComments.Length)];
-                    Console.WriteLine($"\n🔊 SPEAKER SAYS: {comment}\n");
-                    if (_enableSpeech) await SpeakAsync(comment);
+                    await SpeakAsync(comment);
                 }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"❌ Error generating comment: {ex.Message}");
                 // Use fallback on error
-                if (_openAiApiKey != "dummy-key")
+                var meanFallbacks = new[]
                 {
-                    var meanFallbacks = new[]
-                    {
-                        "Something went wrong, but your music taste is still worse!",
-                        "My error handler has better taste than you!",
-                        "Even broken, I know your music is garbage!",
-                        "Technical difficulties can't save you from this musical disaster!"
-                    };
-                    var comment = meanFallbacks[_random.Next(meanFallbacks.Length)];
-                    Console.WriteLine($"🔊 SPEAKER SAYS: {comment}");
-                    if (_enableSpeech) await SpeakAsync(comment);
-                }
+                    "Something went wrong, but your music taste is still worse!",
+                    "My error handler has better taste than you!",
+                    "Even broken, I know your music is garbage!",
+                    "Technical difficulties can't save you from this musical disaster!"
+                };
+                var comment = meanFallbacks[_random.Next(meanFallbacks.Length)];
+                Console.WriteLine($"🔊 SPEAKER SAYS: {comment}");
+                if (_enableSpeech) await SpeakAsync(comment);
             }
         }
 
@@ -1393,6 +1388,7 @@ namespace BluetoothSpeaker
             
             _monitoringCancellation?.Dispose();
             _httpClient?.Dispose();
+            _localAI?.Dispose();
             
             _disposed = true;
         }

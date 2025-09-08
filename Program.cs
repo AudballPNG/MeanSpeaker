@@ -9,6 +9,7 @@
             Console.WriteLine("Commands:");
             Console.WriteLine("  --help, -h           Show this help message");
             Console.WriteLine("  --no-speech          Disable text-to-speech output");
+            Console.WriteLine("  --openai-api         Use OpenAI API instead of local AI");
             Console.WriteLine("  --tts <engine>       Set TTS engine (piper, pico, festival, espeak)");
             Console.WriteLine("  --voice <voice>      Set voice (piper models or espeak voices)");
             Console.WriteLine();
@@ -22,18 +23,40 @@
             Console.WriteLine("  Piper voices: en_US-lessac-medium, en_US-ryan-medium, en_US-amy-medium");
             Console.WriteLine("  eSpeak voices: en+f3, en+m3, en+f4, en+m4 (female/male variants)");
             Console.WriteLine();
+            Console.WriteLine("AI Modes:");
+            Console.WriteLine("  Default              Local AI (Phi-3 Mini) - completely offline");
+            Console.WriteLine("  --openai-api         Use OpenAI API (requires OPENAI_API_KEY)");
+            Console.WriteLine();
             Console.WriteLine("Examples:");
-            Console.WriteLine("  BluetoothSpeaker                           # Use Piper TTS with default voice");
+            Console.WriteLine("  BluetoothSpeaker                           # Use local AI with Piper TTS");
+            Console.WriteLine("  BluetoothSpeaker --openai-api              # Use OpenAI API");
             Console.WriteLine("  BluetoothSpeaker --tts espeak              # Use eSpeak TTS");
-            Console.WriteLine("  BluetoothSpeaker --tts piper --voice en_US-ryan-medium");
             Console.WriteLine("  BluetoothSpeaker --no-speech               # Text output only");
             Console.WriteLine();
+            Console.WriteLine("Local AI Setup (Done automatically by simple-setup.sh):");
+            Console.WriteLine("  1. Install Ollama: curl -fsSL https://ollama.ai/install.sh | sh");
+            Console.WriteLine("  2. Start Ollama: ollama serve");
+            Console.WriteLine("  3. Download model: ollama pull phi3:mini");
+            Console.WriteLine("  4. Run speaker: BluetoothSpeaker");
+            Console.WriteLine();
             Console.WriteLine("Environment Variables:");
-            Console.WriteLine("  OPENAI_API_KEY       Your OpenAI API key for AI commentary");
+            Console.WriteLine("  OPENAI_API_KEY       Your OpenAI API key (only for --openai-api mode)");
         }
 
         static async Task Main(string[] args)
         {
+            // Self-install as a service on Linux with systemd (first run)
+            try
+            {
+                var installed = await AutostartManager.EnsureAutostartAsync(args);
+                if (installed)
+                {
+                    Console.WriteLine("🚀 Relaunching under systemd. Exiting foreground instance...");
+                    return;
+                }
+            }
+            catch { /* non-fatal */ }
+
             // Check for help
             if (args.Contains("--help") || args.Contains("-h"))
             {
@@ -41,8 +64,9 @@
                 return;
             }
             
-            // Check for speech configuration
+            // Check for speech configuration  
             bool enableSpeech = !args.Contains("--no-speech");
+            bool useOpenAI = args.Contains("--openai-api"); // OpenAI is now opt-in
             string ttsVoice = "en_US-lessac-medium"; // Default Piper voice
             string ttsEngine = "piper"; // Default to Piper TTS for best quality
             
@@ -66,29 +90,36 @@
             
             Console.WriteLine("🎵 Snarky Bluetooth Speaker Starting Up...");
             Console.WriteLine($"Speech: {(enableSpeech ? "Enabled" : "Disabled")}");
+            Console.WriteLine($"AI Mode: {(useOpenAI ? "OpenAI API" : "Local AI (Phi-3 Mini)")}");
             if (enableSpeech)
             {
                 Console.WriteLine($"TTS Engine: {ttsEngine}");
                 Console.WriteLine($"Voice: {ttsVoice}");
             }
             
-            // Get OpenAI API key from environment or prompt user
-            string? apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+            // Default to local AI mode (no API key needed)
+            string apiKey = "local-ai-mode";
             
-            if (string.IsNullOrEmpty(apiKey))
+            if (useOpenAI)
             {
-                Console.WriteLine("⚠️ OpenAI API key not found in environment.");
-                Console.WriteLine("You can either:");
-                Console.WriteLine("1. Set it as environment variable: export OPENAI_API_KEY=\"your-key\"");
-                Console.WriteLine("2. Enter it now (it won't be saved):");
-                Console.Write("Enter your OpenAI API key (or press Enter to skip AI features): ");
-                apiKey = Console.ReadLine()?.Trim();
+                // Get OpenAI API key from environment 
+                string? envApiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
                 
-                if (string.IsNullOrEmpty(apiKey))
+                if (!string.IsNullOrEmpty(envApiKey))
                 {
-                    Console.WriteLine("⚠️ No API key provided. AI commentary will be disabled.");
-                    apiKey = "dummy-key"; // Use dummy key to continue without AI features
+                    Console.WriteLine("🌐 Using OpenAI API for commentary generation");
+                    apiKey = envApiKey;
                 }
+                else
+                {
+                    Console.WriteLine("❌ OpenAI API key not found in environment.");
+                    Console.WriteLine("💡 Falling back to local AI mode (recommended)");
+                    apiKey = "local-ai-mode";
+                }
+            }
+            else
+            {
+                Console.WriteLine("🤖 Local AI mode enabled - fully offline operation!");
             }
             
             using var monitor = new MusicMonitor(apiKey, enableSpeech, ttsVoice, ttsEngine);
@@ -96,6 +127,8 @@
             try
             {
                 await monitor.InitializeAsync();
+                // Speak readiness
+                await monitor.AnnounceReadyAsync();
                 await monitor.StartMonitoringAsync();
                 
                 Console.WriteLine("\n🎵 Snarky Bluetooth Speaker is running!");
